@@ -27,17 +27,18 @@ Every protected incoming HTTP request must sequentially pass through a 5-stage v
 
 Standardization of HTTP Responses and Error Codes
 
-HTTP status code	Error code (Code)	Conditions of occurrence and semantics
-400 Bad Request	bad_request	DTO validation error, invalid file format, failure to comply with the password policy, exceeding the allowed image resolution (max 4096x4096px), or an invalid/expired OTP/Magic Link token.
-401 Unauthorized	invalid_session / invalid_credentials	Missing or invalid access token, expired session, inactive user status (pending, blocked, deleting, deleted), or invalid credentials at login.
-403 Forbidden	permission_denied / ownership_denied / csrf_rejected	Insufficient RBAC permissions, failed resource ownership check in the absence of *_any permissions, mismatched or missing CSRF headers.
-404 Not Found	not_found	The requested resource, user, or file does not exist (returned strictly after successfully passing RBAC authorization).
-409 Conflict	conflict	Violation of DB uniqueness constraints (duplicate email, role name, grant), an active account deletion job already exists, or an attempt to reduce the number of administrators with rbac@manage to zero.
-413 Payload Too Large	payload_too_large	The maximum allowed size of the request body or uploaded file is exceeded.
-415 Unsupported Media Type	unsupported_media_type	A file is submitted with a MIME type or extension that is not on the allowlist of permitted formats.
-429 Too Many Requests	rate_limit_exceeded	Request rate limits (Rate Limit) exceeded, email resend blocked until 60 seconds have elapsed, or OTP entry attempts exhausted.
-503 Service Unavailable	authorization_unavailable / service_unavailable	Unavailability of the PostgreSQL database, S3 storage, or SMTP server, or a failure to load/refresh the local RBAC policy snapshot. The route is blocked.
-504 Gateway Timeout	gateway_timeout	The hard execution time limit for a file transformation operation is exceeded (>30 seconds).
+| HTTP status code | Error code (Code) | Conditions of occurrence and semantics |
+| --- | --- | --- |
+| 400 Bad Request | bad_request | DTO validation error, invalid file format, failure to comply with the password policy, exceeding the allowed image resolution (max 4096x4096px), or an invalid/expired OTP/Magic Link token. |
+| 401 Unauthorized | invalid_session / invalid_credentials | Missing or invalid access token, expired session, inactive user status (pending, blocked, deleting, deleted), or invalid credentials at login. |
+| 403 Forbidden | permission_denied / ownership_denied / csrf_rejected | Insufficient RBAC permissions, failed resource ownership check in the absence of *_any permissions, mismatched or missing CSRF headers. |
+| 404 Not Found | not_found | The requested resource, user, or file does not exist (returned strictly after successfully passing RBAC authorization). |
+| 409 Conflict | conflict | Violation of DB uniqueness constraints (duplicate email, role name, grant), an active account deletion job already exists, or an attempt to reduce the number of administrators with rbac@manage to zero. |
+| 413 Payload Too Large | payload_too_large | The maximum allowed size of the request body or uploaded file is exceeded. |
+| 415 Unsupported Media Type | unsupported_media_type | A file is submitted with a MIME type or extension that is not on the allowlist of permitted formats. |
+| 429 Too Many Requests | rate_limit_exceeded | Request rate limits (Rate Limit) exceeded, email resend blocked until 60 seconds have elapsed, or OTP entry attempts exhausted. |
+| 503 Service Unavailable | authorization_unavailable / service_unavailable | Unavailability of the PostgreSQL database, S3 storage, or SMTP server, or a failure to load/refresh the local RBAC policy snapshot. The route is blocked. |
+| 504 Gateway Timeout | gateway_timeout | The hard execution time limit for a file transformation operation is exceeded (>30 seconds). |
 
 Security Requirements and Threat Mitigation
 
@@ -91,12 +92,13 @@ The registration_challenges and login_challenges tables contain a mandatory cons
 
 Token Lifecycle and Cookie Management
 
-Parameter / Characteristic	Access Token (access_token)	Refresh Token (refresh_token)
-Time to live (TTL)	15 minutes	30 days
-Set of claims in the payload	sub, iss, aud, iat, exp, token_use: "access"	sub, iss, aud, iat, exp, token_use: "refresh"
-Signing algorithm and key	HS256 / JWT_ACCESS_SECRET (>= 32 bytes)	HS256 / JWT_REFRESH_SECRET (>= 32 bytes)
-Delivery method	HttpOnly Cookie	HttpOnly Cookie
-Cookie attributes	HttpOnly; Secure; SameSite=Strict; Path=/	HttpOnly; Secure; SameSite=Strict; Path=/auth/refresh
+| Parameter / Characteristic | Access Token (access_token) | Refresh Token (refresh_token) |
+| --- | --- | --- |
+| Time to live (TTL) | 15 minutes | 30 days |
+| Set of claims in the payload | sub, iss, aud, iat, exp, token_use: "access" | sub, iss, aud, iat, exp, token_use: "refresh" |
+| Signing algorithm and key | HS256 / JWT_ACCESS_SECRET (>= 32 bytes) | HS256 / JWT_REFRESH_SECRET (>= 32 bytes) |
+| Delivery method | HttpOnly Cookie | HttpOnly Cookie |
+| Cookie attributes | HttpOnly; Secure; SameSite=Strict; Path=/ | HttpOnly; Secure; SameSite=Strict; Path=/auth/refresh |
 
 * Refresh semantics (POST /auth/refresh): Rate-limited to 30 requests per minute per IP. Implements token rotation without storing state (stateless). Verifies the signature and lifetime of the refresh token and that the user exists in the DB with status active. On success, generates and sets a new pair of cookies (204 No Content).
 * Logout semantics (POST /auth/logout): Idempotently clears both cookies (access_token, refresh_token), returning to the client a Set-Cookie header with a past date and matching Path/SameSite attributes. Always returns 204 No Content.
@@ -141,21 +143,22 @@ Initial Initialization (Bootstrap) and the Administrator Invariant
 
 Administrative API Specification (/admin/rbac/*)
 
-Endpoint	Method	Request body / Parameters	Validation and error handling
-/admin/rbac/roles	GET	—	Returns an array of all roles.
-/admin/rbac/roles	POST	name: string, description?: string	name from 1 to 64 characters (^[a-z][a-z0-9._-]{0,63}$). description max 500 chars (an empty string is reduced to null).
-/admin/rbac/roles/{roleId}	PUT	name: string, description?: string	Full replacement of the role's fields. Validation is the same as for POST.
-/admin/rbac/roles/{roleId}	DELETE	—	Rejected with 409 Conflict if the role is assigned to users or has active grants.
-/admin/rbac/permissions	GET	—	Returns a list of all permissions with their actions.
-/admin/rbac/permissions	POST	name: string, description?: string, actions: string[]	actions contains from 1 to 64 unique strings.
-/admin/rbac/permissions/{permissionId}	PUT	name: string, description?: string, actions: string[]	Updates the permission. Removing an action linked to grant_actions returns 409 Conflict. If a role has all_actions = true assigned, the action is removed seamlessly without a conflict.
-/admin/rbac/permissions/{permissionId}	DELETE	—	Rejected with 409 Conflict if there are linked grants.
-/admin/rbac/grants	GET	—	Returns a list of all permission grants to roles.
-/admin/rbac/grants	POST	roleId: UUID, permissionId: UUID, actions?: string[]	An empty actions array sets all_actions = true.
-/admin/rbac/grants/{grantId}	PUT	roleId: UUID, permissionId: UUID, actions?: string[]	Full update of the permission grant.
-/admin/rbac/grants/{grantId}	DELETE	—	Deletes the permission grant.
-/admin/rbac/users/{userId}/roles	GET	—	Retrieves the array of the user's role IDs.
-/admin/rbac/users/{userId}/roles	PUT	roleIds: UUID[]	Full replacement of the user's role array. Passing an empty array removes all roles. Checking the rbac@manage invariant is mandatory.
+| Endpoint | Method | Request body / Parameters | Validation and error handling |
+| --- | --- | --- | --- |
+| /admin/rbac/roles | GET | — | Returns an array of all roles. |
+| /admin/rbac/roles | POST | name: string, description?: string | name from 1 to 64 characters (^[a-z][a-z0-9._-]{0,63}$). description max 500 chars (an empty string is reduced to null). |
+| /admin/rbac/roles/{roleId} | PUT | name: string, description?: string | Full replacement of the role's fields. Validation is the same as for POST. |
+| /admin/rbac/roles/{roleId} | DELETE | — | Rejected with 409 Conflict if the role is assigned to users or has active grants. |
+| /admin/rbac/permissions | GET | — | Returns a list of all permissions with their actions. |
+| /admin/rbac/permissions | POST | name: string, description?: string, actions: string[] | actions contains from 1 to 64 unique strings. |
+| /admin/rbac/permissions/{permissionId} | PUT | name: string, description?: string, actions: string[] | Updates the permission. Removing an action linked to grant_actions returns 409 Conflict. If a role has all_actions = true assigned, the action is removed seamlessly without a conflict. |
+| /admin/rbac/permissions/{permissionId} | DELETE | — | Rejected with 409 Conflict if there are linked grants. |
+| /admin/rbac/grants | GET | — | Returns a list of all permission grants to roles. |
+| /admin/rbac/grants | POST | roleId: UUID, permissionId: UUID, actions?: string[] | An empty actions array sets all_actions = true. |
+| /admin/rbac/grants/{grantId} | PUT | roleId: UUID, permissionId: UUID, actions?: string[] | Full update of the permission grant. |
+| /admin/rbac/grants/{grantId} | DELETE | — | Deletes the permission grant. |
+| /admin/rbac/users/{userId}/roles | GET | — | Retrieves the array of the user's role IDs. |
+| /admin/rbac/users/{userId}/roles | PUT | roleIds: UUID[] | Full replacement of the user's role array. Passing an empty array removes all roles. Checking the rbac@manage invariant is mandatory. |
 
 The designed access control system ensures the security of operations on user entities, which are governed by the User and Profile Management Module.
 
