@@ -32,7 +32,7 @@ Every step has the same four parts:
 
 **Progress overview**
 
-- [x] Stage 0. Foundations and project setup
+- [ ] Stage 0. Foundations and project setup
 - [ ] Stage 1. Users table and registration
 - [ ] Stage 2. RBAC: data model and bootstrap
 - [ ] Stage 3. Authentication: login, tokens, cookies
