@@ -16,7 +16,7 @@ export class MyService {
 
   someMethod() {
     const port = this.config.get('PORT');      // Type-safe, autocomplete works
-    const env = this.config.get('NODE_ENV');   // Returns 'development' | 'production'
+    const env = this.config.get('NODE_ENV');   // Returns 'development' | 'production' | 'test'
   }
 }
 ```
@@ -28,7 +28,7 @@ export class MyService {
 ```typescript
 export interface Config {
   PORT: number;
-  NODE_ENV: 'development' | 'production';
+  NODE_ENV: 'development' | 'production' | 'test';
   DATABASE_URL: string;  // Add new option here
 }
 ```
@@ -38,7 +38,7 @@ export interface Config {
 ```typescript
 export const configValidationSchema = Joi.object<Config>({
   PORT: Joi.number().port().required(),
-  NODE_ENV: Joi.string().valid('development', 'production').required(),
+  NODE_ENV: Joi.string().valid('development', 'production', 'test').required(),
   DATABASE_URL: Joi.string().uri().required(),  // Add validation here
 });
 ```

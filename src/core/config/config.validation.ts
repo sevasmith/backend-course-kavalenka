@@ -4,7 +4,7 @@ import { Config } from './config.types';
 
 export const configValidationSchema = Joi.object<Config>({
   PORT: Joi.number().port().required(),
-  NODE_ENV: Joi.string().valid('development', 'production').required(),
+  NODE_ENV: Joi.string().valid('development', 'production', 'test').required(),
 
   /**
    * Cookie secret
