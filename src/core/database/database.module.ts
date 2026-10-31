@@ -27,9 +27,7 @@ import { ConfigService } from '@/core/config/config.service';
         autoLoadEntities: true,
 
         migrationsTableName: 'migrations',
-        migrations: [
-          __dirname + '/../../database/migrations/*.migration{.ts,.js}',
-        ],
+        migrations: [__dirname + '/../../database/migrations/*{.ts,.js}'],
         migrationsRun: String(config.get('POSTGRES_MIGRATIONS_RUN')) === 'true',
 
         synchronize: String(config.get('POSTGRES_SYNCHRONIZE')) === 'true',
