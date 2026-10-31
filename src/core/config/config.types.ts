@@ -19,6 +19,11 @@ export interface Config {
   THROTTLE_GLOBAL_LIMIT?: number;
 
   /**
+   * Registration options
+   */
+  REGISTRATION_EMAIL_CONFIRMATION_ENABLED?: boolean;
+
+  /**
    * PostgreSQL database options
    */
   POSTGRES_HOST: string;

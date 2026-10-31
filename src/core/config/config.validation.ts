@@ -23,6 +23,13 @@ export const configValidationSchema = Joi.object<Config>({
   THROTTLE_GLOBAL_LIMIT: Joi.number().optional().default(10),
 
   /**
+   * Registration options
+   */
+  REGISTRATION_EMAIL_CONFIRMATION_ENABLED: Joi.boolean()
+    .optional()
+    .default(false),
+
+  /**
    * PostgreSQL database options
    */
   POSTGRES_HOST: Joi.string().hostname().required(),
