@@ -7,7 +7,7 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
-import { User } from '@/modules/users/user.entity';
+import { User } from '../users/user.entity';
 import { RegistrationChallengeMethod } from './registration-challenge.types';
 
 @Entity('registration_challenges')
