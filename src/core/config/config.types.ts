@@ -1,3 +1,5 @@
+export type RegistrationConfirmationMethod = 'otp' | 'magic_link';
+
 export interface Config {
   PORT: number;
   NODE_ENV: 'development' | 'production' | 'test';
@@ -22,6 +24,7 @@ export interface Config {
    * Registration options
    */
   REGISTRATION_EMAIL_CONFIRMATION_ENABLED?: boolean;
+  REGISTRATION_EMAIL_CONFIRMATION_METHOD?: RegistrationConfirmationMethod;
 
   /**
    * PostgreSQL database options
