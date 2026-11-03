@@ -25,7 +25,7 @@ export interface Config {
    */
   REGISTRATION_EMAIL_CONFIRMATION_ENABLED?: boolean;
   REGISTRATION_EMAIL_CONFIRMATION_METHOD: RegistrationConfirmationMethod;
-  LOGIN_CHALLENGE_HMAC_KEY: string;
+  REGISTRATION_CHALLENGE_HMAC_KEY: string;
 
   /**
    * PostgreSQL database options

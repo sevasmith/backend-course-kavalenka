@@ -49,7 +49,7 @@ export class RegistrationChallengeService {
   private hmac(secret: string): string {
     return createHmac(
       'sha256',
-      this.configService.get('LOGIN_CHALLENGE_HMAC_KEY'),
+      this.configService.get('REGISTRATION_CHALLENGE_HMAC_KEY'),
     )
       .update(secret)
       .digest('hex');
