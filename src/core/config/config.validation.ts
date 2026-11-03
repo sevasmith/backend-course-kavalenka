@@ -32,6 +32,7 @@ export const configValidationSchema = Joi.object<Config>({
     .valid('otp', 'magic_link')
     .optional()
     .default('otp'),
+  LOGIN_CHALLENGE_HMAC_KEY: Joi.string().min(32).required(),
 
   /**
    * PostgreSQL database options
