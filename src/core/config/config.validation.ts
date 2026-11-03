@@ -33,6 +33,27 @@ export const configValidationSchema = Joi.object<Config>({
     .optional()
     .default('otp'),
   REGISTRATION_CHALLENGE_HMAC_KEY: Joi.string().min(32).required(),
+  REGISTRATION_CONFIRM_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .when('REGISTRATION_EMAIL_CONFIRMATION_METHOD', {
+      is: 'magic_link',
+      then: Joi.required(),
+      otherwise: Joi.optional(),
+    }),
+
+  /**
+   * SMTP options
+   */
+  SMTP_HOST: Joi.string().hostname().required(),
+  SMTP_PORT: Joi.number().port().required(),
+  SMTP_SECURE: Joi.boolean().optional().default(false),
+  SMTP_USER: Joi.string().optional(),
+  SMTP_PASSWORD: Joi.string().when('SMTP_USER', {
+    is: Joi.exist(),
+    then: Joi.required(),
+    otherwise: Joi.forbidden(),
+  }),
+  SMTP_FROM: Joi.string().required(),
 
   /**
    * PostgreSQL database options
