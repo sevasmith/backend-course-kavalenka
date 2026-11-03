@@ -1,6 +1,8 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
 import { ConfigService } from '@/core/config/config.service';
+import { MailService } from '@/core/mail/mail.service';
 import { User } from '@/modules/users/user.entity';
 import { UserStatus } from '@/modules/users/user.types';
 import { UsersService } from '@/modules/users/users.service';
@@ -23,6 +25,10 @@ describe('AuthService', () => {
   let passwordService: { hash: jest.Mock };
   let usersService: { createUser: jest.Mock };
   let challengeService: { create: jest.Mock };
+  let mailService: {
+    sendRegistrationOtp: jest.Mock;
+    sendRegistrationMagicLink: jest.Mock;
+  };
 
   beforeEach(async () => {
     config = { get: jest.fn() };
@@ -46,6 +52,10 @@ describe('AuthService', () => {
         secret: '123456',
       }),
     };
+    mailService = {
+      sendRegistrationOtp: jest.fn().mockResolvedValue(undefined),
+      sendRegistrationMagicLink: jest.fn().mockResolvedValue(undefined),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -57,6 +67,7 @@ describe('AuthService', () => {
           provide: RegistrationChallengeService,
           useValue: challengeService,
         },
+        { provide: MailService, useValue: mailService },
       ],
     }).compile();
 
@@ -77,6 +88,13 @@ describe('AuthService', () => {
       });
     });
 
+    it('does not send an email', async () => {
+      await service.register(dto);
+
+      expect(mailService.sendRegistrationOtp).not.toHaveBeenCalled();
+      expect(mailService.sendRegistrationMagicLink).not.toHaveBeenCalled();
+    });
+
     it('returns only id, email and status', async () => {
       await expect(service.register(dto)).resolves.toEqual({
         id: 'user-id',
@@ -87,13 +105,19 @@ describe('AuthService', () => {
   });
 
   describe('register with confirmation enabled', () => {
-    beforeEach(() =>
-      config.get.mockImplementation((key: string) =>
-        key === 'REGISTRATION_EMAIL_CONFIRMATION_METHOD'
-          ? RegistrationChallengeMethod.OTP
-          : true,
-      ),
-    );
+    const confirmUrl = 'http://localhost:3000/register/confirm';
+
+    const useMethod = (method: RegistrationChallengeMethod) =>
+      config.get.mockImplementation(
+        (key: string) =>
+          ({
+            REGISTRATION_EMAIL_CONFIRMATION_ENABLED: true,
+            REGISTRATION_EMAIL_CONFIRMATION_METHOD: method,
+            REGISTRATION_CONFIRM_URL: confirmUrl,
+          })[key],
+      );
+
+    beforeEach(() => useMethod(RegistrationChallengeMethod.OTP));
 
     it('saves a pending user and a challenge with the configured method', async () => {
       await service.register(dto);
@@ -117,6 +141,45 @@ describe('AuthService', () => {
         expiresInSeconds: 600,
         resendAfterSeconds: 60,
       });
+    });
+
+    it('emails the OTP code', async () => {
+      await service.register(dto);
+
+      expect(mailService.sendRegistrationOtp).toHaveBeenCalledWith(
+        dto.email,
+        '123456',
+      );
+    });
+
+    it('emails a magic link with attemptId.secret in the fragment', async () => {
+      useMethod(RegistrationChallengeMethod.MAGIC_LINK);
+      challengeService.create.mockResolvedValue({
+        challenge: {
+          id: 'attempt-id',
+          method: RegistrationChallengeMethod.MAGIC_LINK,
+        },
+        secret: 'token',
+      });
+
+      await service.register(dto);
+
+      expect(mailService.sendRegistrationMagicLink).toHaveBeenCalledWith(
+        dto.email,
+        `${confirmUrl}#attempt-id.token`,
+      );
+    });
+
+    it('returns 503 and keeps the user and attempt when the email fails', async () => {
+      mailService.sendRegistrationOtp.mockRejectedValue(
+        new Error('ECONNREFUSED'),
+      );
+
+      await expect(service.register(dto)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(usersService.createUser).toHaveBeenCalled();
+      expect(challengeService.create).toHaveBeenCalled();
     });
   });
 });
