@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  HttpStatus,
-  NotImplementedException,
-} from '@nestjs/common';
+import { BadRequestException, HttpStatus } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import type { FastifyReply } from 'fastify';
 import { UserStatus } from '@/modules/users/user.types';
@@ -71,16 +67,17 @@ describe('AuthController', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    // Temporary until step 8: the found attempt must not reach the client.
-    it('answers 501 after the attempt is found', async () => {
-      authService.confirmRegistration.mockResolvedValue({
-        id: 'attempt-id',
-        secretHash: 'hash',
-      });
+    it('returns the active profile from the service', async () => {
+      const result = {
+        id: 'user-id',
+        email: dto.email,
+        status: UserStatus.ACTIVE,
+      };
+      authService.confirmRegistration.mockResolvedValue(result);
 
-      await expect(
-        controller.confirmRegistration(confirmDto),
-      ).rejects.toBeInstanceOf(NotImplementedException);
+      await expect(controller.confirmRegistration(confirmDto)).resolves.toEqual(
+        result,
+      );
     });
   });
 });

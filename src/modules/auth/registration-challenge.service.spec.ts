@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -6,7 +6,17 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@/core/config/config.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import { RegistrationChallengeService } from './registration-challenge.service';
-import { RegistrationChallengeMethod } from './registration-challenge.types';
+import {
+  RegistrationChallengeConsumedReason,
+  RegistrationChallengeMethod,
+} from './registration-challenge.types';
+
+// Wraps the real function so a test can check that it is used.
+jest.mock('node:crypto', () => {
+  const actual =
+    jest.requireActual<typeof import('node:crypto')>('node:crypto');
+  return { ...actual, timingSafeEqual: jest.fn(actual.timingSafeEqual) };
+});
 
 describe('RegistrationChallengeService', () => {
   const hmacKey = 'k'.repeat(32);
@@ -17,7 +27,8 @@ describe('RegistrationChallengeService', () => {
   let repository: {
     create: jest.Mock;
     save: jest.Mock;
-    findOneBy: jest.Mock;
+    findOne: jest.Mock;
+    update: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -26,7 +37,8 @@ describe('RegistrationChallengeService', () => {
       save: jest.fn((input: object) =>
         Promise.resolve({ id: 'attempt-id', ...input }),
       ),
-      findOneBy: jest.fn().mockResolvedValue(null),
+      findOne: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -75,25 +87,97 @@ describe('RegistrationChallengeService', () => {
     );
   });
 
-  it('finds an OTP attempt by id and only among OTP attempts', async () => {
-    await service.findOtpAttempt('attempt-id');
+  it('finds an OTP attempt by id, only among OTP attempts, and locks the row', async () => {
+    await service.findOtpAttemptForUpdate('attempt-id');
 
-    expect(repository.findOneBy).toHaveBeenCalledWith({
-      id: 'attempt-id',
-      method: RegistrationChallengeMethod.OTP,
+    expect(repository.findOne).toHaveBeenCalledWith({
+      where: { id: 'attempt-id', method: RegistrationChallengeMethod.OTP },
+      lock: { mode: 'pessimistic_write' },
     });
   });
 
-  it('finds a magic link attempt by the HMAC of the token, not the token', async () => {
-    await service.findMagicLinkAttempt('token');
+  it('finds a magic link attempt by the HMAC of the token, not the token, and locks the row', async () => {
+    await service.findMagicLinkAttemptForUpdate('token');
 
-    expect(repository.findOneBy).toHaveBeenCalledWith({
-      secretHash: hmac('token'),
-      method: RegistrationChallengeMethod.MAGIC_LINK,
+    expect(repository.findOne).toHaveBeenCalledWith({
+      where: {
+        secretHash: hmac('token'),
+        method: RegistrationChallengeMethod.MAGIC_LINK,
+      },
+      lock: { mode: 'pessimistic_write' },
     });
   });
 
   it('returns null when nothing matches', async () => {
-    await expect(service.findMagicLinkAttempt('token')).resolves.toBeNull();
+    await expect(
+      service.findMagicLinkAttemptForUpdate('token'),
+    ).resolves.toBeNull();
+  });
+
+  describe('secretMatches', () => {
+    const challenge = { secretHash: hmac('123456') } as RegistrationChallenge;
+
+    it('accepts the secret whose HMAC is stored', () => {
+      expect(service.secretMatches(challenge, '123456')).toBe(true);
+    });
+
+    it('rejects another secret', () => {
+      expect(service.secretMatches(challenge, '654321')).toBe(false);
+    });
+
+    it('rejects instead of throwing when the stored hash has another length', () => {
+      const broken = { secretHash: 'abcd' } as RegistrationChallenge;
+
+      expect(service.secretMatches(broken, '123456')).toBe(false);
+    });
+
+    it('compares in constant time with crypto.timingSafeEqual', () => {
+      jest.mocked(timingSafeEqual).mockClear();
+
+      service.secretMatches(challenge, '654321');
+
+      expect(timingSafeEqual).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('registerWrongSecret', () => {
+    const challenge = (attempts: number) =>
+      ({ id: 'attempt-id', attempts }) as RegistrationChallenge;
+
+    it('increments the counter and keeps the attempt active', async () => {
+      const result = await service.registerWrongSecret(challenge(0));
+
+      expect(repository.update).toHaveBeenCalledWith('attempt-id', {
+        attempts: 1,
+        consumedAt: null,
+        consumedReason: null,
+      });
+      expect(result.attempts).toBe(1);
+    });
+
+    it('consumes the attempt with attempts_exhausted on the fifth wrong entry', async () => {
+      const result = await service.registerWrongSecret(challenge(4));
+
+      expect(repository.update).toHaveBeenCalledWith('attempt-id', {
+        attempts: 5,
+        consumedAt: expect.any(Date) as Date,
+        consumedReason: RegistrationChallengeConsumedReason.ATTEMPTS_EXHAUSTED,
+      });
+      expect(result.consumedReason).toBe(
+        RegistrationChallengeConsumedReason.ATTEMPTS_EXHAUSTED,
+      );
+    });
+  });
+
+  it('consumes an attempt with the given reason', async () => {
+    await service.consume(
+      { id: 'attempt-id' } as RegistrationChallenge,
+      RegistrationChallengeConsumedReason.CONFIRMED,
+    );
+
+    expect(repository.update).toHaveBeenCalledWith('attempt-id', {
+      consumedAt: expect.any(Date) as Date,
+      consumedReason: RegistrationChallengeConsumedReason.CONFIRMED,
+    });
   });
 });

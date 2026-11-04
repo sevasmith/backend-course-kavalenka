@@ -2,7 +2,7 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { User } from './user.entity';
 import { QueryFailedError, Repository } from 'typeorm';
-import { CreateUserData } from './user.types';
+import { CreateUserData, UserStatus } from './user.types';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -23,6 +23,21 @@ export class UsersService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Locks the user row until the transaction ends, so the status cannot change
+   * between the check and the update. Must be called inside a transaction.
+   */
+  findByIdForUpdate(id: string): Promise<User | null> {
+    return this.usersRepository.findOne({
+      where: { id },
+      lock: { mode: 'pessimistic_write' },
+    });
+  }
+
+  async updateStatus(id: string, status: UserStatus): Promise<void> {
+    await this.usersRepository.update(id, { status });
   }
 }
 

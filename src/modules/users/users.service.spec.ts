@@ -8,7 +8,12 @@ import { UserStatus } from './user.types';
 
 describe('UsersService', () => {
   let service: UsersService;
-  let repository: { create: jest.Mock; save: jest.Mock };
+  let repository: {
+    create: jest.Mock;
+    save: jest.Mock;
+    findOne: jest.Mock;
+    update: jest.Mock;
+  };
 
   const data = {
     email: 'user@example.com',
@@ -20,6 +25,8 @@ describe('UsersService', () => {
     repository = {
       create: jest.fn((input: unknown) => input),
       save: jest.fn(),
+      findOne: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -54,5 +61,22 @@ describe('UsersService', () => {
     repository.save.mockRejectedValue(error);
 
     await expect(service.createUser(data)).rejects.toBe(error);
+  });
+
+  it('finds a user by id and locks the row', async () => {
+    await service.findByIdForUpdate('user-id');
+
+    expect(repository.findOne).toHaveBeenCalledWith({
+      where: { id: 'user-id' },
+      lock: { mode: 'pessimistic_write' },
+    });
+  });
+
+  it('updates only the status', async () => {
+    await service.updateStatus('user-id', UserStatus.ACTIVE);
+
+    expect(repository.update).toHaveBeenCalledWith('user-id', {
+      status: UserStatus.ACTIVE,
+    });
   });
 });

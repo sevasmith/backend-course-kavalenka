@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -11,16 +13,33 @@ import { PasswordService } from './password.service';
 import { UsersService } from '../users/users.service';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
-import { RegisterPendingResult, RegisterResult } from './auth.types';
+import {
+  ConfirmationOutcome,
+  ConfirmRegistrationResult,
+  RegisterPendingResult,
+  RegisterResult,
+} from './auth.types';
 import { UserStatus } from '../users/user.types';
 import { RegistrationChallengeService } from './registration-challenge.service';
-import { RegistrationChallenge } from './registration-challenge.entity';
 import {
   INVALID_REGISTRATION_CONFIRMATION_MESSAGE,
+  REGISTRATION_ATTEMPTS_EXHAUSTED_MESSAGE,
+  REGISTRATION_CHALLENGE_MAX_ATTEMPTS,
   REGISTRATION_CHALLENGE_RESEND_AFTER_SECONDS,
   REGISTRATION_CHALLENGE_TTL_SECONDS,
+  RegistrationChallengeConsumedReason,
   RegistrationChallengeMethod,
 } from './registration-challenge.types';
+
+/**
+ * Statuses that consume an open attempt with `user_inactive`: the user was
+ * blocked or deleted before confirming.
+ */
+const INACTIVE_USER_STATUSES: readonly UserStatus[] = [
+  UserStatus.BLOCKED,
+  UserStatus.DELETING,
+  UserStatus.DELETED,
+];
 
 @Injectable()
 export class AuthService {
@@ -63,31 +82,145 @@ export class AuthService {
   }
 
   /**
-   * Step 7: finds the attempt by the form of the body. The method comes from
-   * the saved attempt, not from the config: an issued attempt stays valid
-   * even if the confirmation flag or method changes.
+   * The checks and writes run in `applyConfirmation` (one transaction). This
+   * method turns its outcome into a response only after the commit: throwing
+   * the 400 inside the transaction would roll back the wrong-code counter and
+   * make brute force unlimited.
    */
   async confirmRegistration(
     dto: ConfirmRegistrationDto,
-  ): Promise<RegistrationChallenge> {
+  ): Promise<ConfirmRegistrationResult> {
+    const outcome = await this.applyConfirmation(dto);
+
+    if (outcome.confirmed) {
+      this.logger.log(
+        `Registration confirmed, attemptId=${outcome.attemptId}, userId=${outcome.user.id}`,
+      );
+      return outcome.user;
+    }
+
+    const { reason, attemptId, userId, attempts } = outcome;
+    this.logger.warn(
+      `Registration confirmation failed, reason=${reason}, ` +
+        `attemptId=${attemptId ?? 'unknown'}, userId=${userId ?? 'unknown'}` +
+        (attempts !== undefined
+          ? `, attempts=${attempts}/${REGISTRATION_CHALLENGE_MAX_ATTEMPTS}`
+          : ''),
+    );
+
+    if (reason === 'attempts_exhausted') {
+      throw new HttpException(
+        REGISTRATION_ATTEMPTS_EXHAUSTED_MESSAGE,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    throw new BadRequestException(INVALID_REGISTRATION_CONFIRMATION_MESSAGE);
+  }
+
+  /**
+   * One transaction. The attempt row is locked first (`SELECT ... FOR
+   * UPDATE`), so parallel requests for the same attempt run one after another:
+   * two of them cannot both succeed, and parallel wrong guesses cannot skip
+   * the limit. Returns the outcome instead of throwing, so every write here
+   * (counter, consumption, activation) is committed.
+   *
+   * The method comes from the saved attempt, not from the config: an issued
+   * attempt stays valid even if the confirmation flag or method changes.
+   */
+  @Transactional()
+  private async applyConfirmation(
+    dto: ConfirmRegistrationDto,
+  ): Promise<ConfirmationOutcome> {
     const challenge =
       dto.token !== undefined
-        ? await this.registrationChallengeService.findMagicLinkAttempt(
+        ? await this.registrationChallengeService.findMagicLinkAttemptForUpdate(
             dto.token,
           )
-        : await this.registrationChallengeService.findOtpAttempt(
+        : await this.registrationChallengeService.findOtpAttemptForUpdate(
             dto.attemptId!,
           );
 
-    // Not found, wrong method and consumed give the same 400 as a wrong code.
-    if (!challenge || challenge.consumedAt !== null) {
-      throw new BadRequestException(INVALID_REGISTRATION_CONFIRMATION_MESSAGE);
+    if (!challenge) {
+      return {
+        confirmed: false,
+        reason: 'not_found',
+        attemptId: dto.attemptId,
+      };
     }
 
-    // TODO(step 8): reject expired (no counter increment), check the attempt
-    // limit (429), compare the OTP code in constant time, then activate the
-    // user and consume the attempt in one transaction, and return 200.
-    return challenge;
+    const attemptId = challenge.id;
+    const userId = challenge.userId;
+
+    // Consumed: after five wrong codes it is 429 (even for the correct code),
+    // otherwise (confirmed, replaced, user_inactive) the shared 400.
+    if (challenge.consumedAt !== null) {
+      const reason =
+        challenge.consumedReason ===
+        RegistrationChallengeConsumedReason.ATTEMPTS_EXHAUSTED
+          ? 'attempts_exhausted'
+          : 'consumed';
+      return { confirmed: false, reason, attemptId, userId };
+    }
+
+    // Expired: rejected without counting an entry.
+    if (challenge.expiresAt.getTime() <= Date.now()) {
+      return { confirmed: false, reason: 'expired', attemptId, userId };
+    }
+
+    // Defensive: the fifth wrong entry already consumes the attempt.
+    if (challenge.attempts >= REGISTRATION_CHALLENGE_MAX_ATTEMPTS) {
+      return {
+        confirmed: false,
+        reason: 'attempts_exhausted',
+        attemptId,
+        userId,
+      };
+    }
+
+    // A magic link attempt was found by this HMAC, so it always matches here;
+    // it still goes through the same path.
+    const secret = dto.token ?? dto.code!;
+    if (!this.registrationChallengeService.secretMatches(challenge, secret)) {
+      const { attempts } =
+        await this.registrationChallengeService.registerWrongSecret(challenge);
+      return {
+        confirmed: false,
+        reason: 'wrong_secret',
+        attemptId,
+        userId,
+        attempts,
+      };
+    }
+
+    const user = await this.usersService.findByIdForUpdate(userId);
+    if (user?.status !== UserStatus.PENDING) {
+      // Blocked or deleted before confirming: the attempt can never succeed.
+      // Any other status (e.g. already active) is left as it is.
+      if (user && INACTIVE_USER_STATUSES.includes(user.status)) {
+        await this.registrationChallengeService.consume(
+          challenge,
+          RegistrationChallengeConsumedReason.USER_INACTIVE,
+        );
+      }
+      return {
+        confirmed: false,
+        reason: 'user_not_pending',
+        attemptId,
+        userId,
+      };
+    }
+
+    await this.usersService.updateStatus(user.id, UserStatus.ACTIVE);
+    await this.registrationChallengeService.consume(
+      challenge,
+      RegistrationChallengeConsumedReason.CONFIRMED,
+    );
+
+    return {
+      confirmed: true,
+      attemptId,
+      user: { id: user.id, email: user.email, status: UserStatus.ACTIVE },
+    };
   }
 
   /**

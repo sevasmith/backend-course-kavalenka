@@ -1,4 +1,9 @@
-import { createHmac, randomBytes, randomInt } from 'node:crypto';
+import {
+  createHmac,
+  randomBytes,
+  randomInt,
+  timingSafeEqual,
+} from 'node:crypto';
 
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -8,7 +13,9 @@ import { ConfigService } from '@/core/config/config.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import {
   CreatedRegistrationChallenge,
+  REGISTRATION_CHALLENGE_MAX_ATTEMPTS,
   REGISTRATION_CHALLENGE_TTL_SECONDS,
+  RegistrationChallengeConsumedReason,
   RegistrationChallengeMethod,
 } from './registration-challenge.types';
 
@@ -49,22 +56,80 @@ export class RegistrationChallengeService {
   /**
    * OTP: found by id only. Comparing the code happens later, against this one
    * attempt: a 6-digit HMAC must never be searched across the whole table.
+   *
+   * The row is locked (`SELECT ... FOR UPDATE`) until the transaction ends:
+   * a parallel confirmation of the same attempt waits here and then sees the
+   * committed counter and `consumedAt`. Must be called inside a transaction.
    */
-  findOtpAttempt(attemptId: string): Promise<RegistrationChallenge | null> {
-    return this.challengesRepository.findOneBy({
-      id: attemptId,
-      method: RegistrationChallengeMethod.OTP,
+  findOtpAttemptForUpdate(
+    attemptId: string,
+  ): Promise<RegistrationChallenge | null> {
+    return this.challengesRepository.findOne({
+      where: { id: attemptId, method: RegistrationChallengeMethod.OTP },
+      lock: { mode: 'pessimistic_write' },
     });
   }
 
   /**
    * Magic link: found by the HMAC of the token (partial unique index). The
    * method filter stops an OTP code sent as a token from matching an OTP row.
+   * Locked the same way as the OTP attempt. Must be called inside a transaction.
    */
-  findMagicLinkAttempt(token: string): Promise<RegistrationChallenge | null> {
-    return this.challengesRepository.findOneBy({
-      secretHash: this.hmac(token),
-      method: RegistrationChallengeMethod.MAGIC_LINK,
+  findMagicLinkAttemptForUpdate(
+    token: string,
+  ): Promise<RegistrationChallenge | null> {
+    return this.challengesRepository.findOne({
+      where: {
+        secretHash: this.hmac(token),
+        method: RegistrationChallengeMethod.MAGIC_LINK,
+      },
+      lock: { mode: 'pessimistic_write' },
+    });
+  }
+
+  /**
+   * Constant-time comparison of the HMACs: `===` stops at the first different
+   * character, and the response time would leak how much of the hash matched.
+   */
+  secretMatches(challenge: RegistrationChallenge, secret: string): boolean {
+    const expected = Buffer.from(challenge.secretHash, 'hex');
+    const actual = Buffer.from(this.hmac(secret), 'hex');
+
+    // timingSafeEqual throws on different lengths; a stored hash is always 32 bytes.
+    return (
+      expected.length === actual.length && timingSafeEqual(expected, actual)
+    );
+  }
+
+  /**
+   * Counts a wrong entry. The fifth one also consumes the attempt, so the next
+   * request is rejected even with the correct code. The row is locked by the
+   * caller, so reading `attempts` and writing `attempts + 1` cannot race.
+   */
+  async registerWrongSecret(
+    challenge: RegistrationChallenge,
+  ): Promise<RegistrationChallenge> {
+    const attempts = challenge.attempts + 1;
+    const exhausted = attempts >= REGISTRATION_CHALLENGE_MAX_ATTEMPTS;
+    const changes = {
+      attempts,
+      consumedAt: exhausted ? new Date() : null,
+      consumedReason: exhausted
+        ? RegistrationChallengeConsumedReason.ATTEMPTS_EXHAUSTED
+        : null,
+    };
+
+    await this.challengesRepository.update(challenge.id, changes);
+    return { ...challenge, ...changes };
+  }
+
+  async consume(
+    challenge: RegistrationChallenge,
+    reason: RegistrationChallengeConsumedReason,
+  ): Promise<void> {
+    await this.challengesRepository.update(challenge.id, {
+      consumedAt: new Date(),
+      consumedReason: reason,
     });
   }
 

@@ -8,7 +8,10 @@ import {
 } from 'typeorm';
 
 import { User } from '../users/user.entity';
-import { RegistrationChallengeMethod } from './registration-challenge.types';
+import {
+  RegistrationChallengeConsumedReason,
+  RegistrationChallengeMethod,
+} from './registration-challenge.types';
 
 /**
  * A magic link attempt is found by the HMAC of its token, so the lookup needs
@@ -59,4 +62,16 @@ export class RegistrationChallenge {
 
   @Column({ name: 'consumed_at', type: 'timestamptz', nullable: true })
   consumedAt: Date | null;
+
+  /**
+   * Set together with `consumedAt`. Null while the attempt is active.
+   */
+  @Column({
+    name: 'consumed_reason',
+    type: 'enum',
+    enum: Object.values(RegistrationChallengeConsumedReason),
+    enumName: 'registration_challenge_consumed_reason',
+    nullable: true,
+  })
+  consumedReason: RegistrationChallengeConsumedReason | null;
 }

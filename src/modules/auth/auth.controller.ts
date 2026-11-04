@@ -3,7 +3,6 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
-  NotImplementedException,
   Post,
   Res,
 } from '@nestjs/common';
@@ -11,7 +10,11 @@ import type { FastifyReply } from 'fastify';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { AuthService } from './auth.service';
-import { RegisterPendingResult, RegisterResult } from './auth.types';
+import {
+  ConfirmRegistrationResult,
+  RegisterPendingResult,
+  RegisterResult,
+} from './auth.types';
 
 @Controller('auth')
 export class AuthController {
@@ -35,17 +38,15 @@ export class AuthController {
     return result;
   }
 
+  /**
+   * 200 with the safe profile; 400 for any invalid attempt, 429 when the
+   * code entry limit is exhausted.
+   */
   @Post('register/confirm')
   @HttpCode(HttpStatus.OK)
-  async confirmRegistration(
+  confirmRegistration(
     @Body() dto: ConfirmRegistrationDto,
-  ): Promise<void> {
-    await this.authService.confirmRegistration(dto);
-
-    // TODO(step 8): return 200 with id, email and status: active.
-    // Until then the found attempt is not returned: it holds the secret hash.
-    throw new NotImplementedException(
-      'Registration confirmation is not finished yet',
-    );
+  ): Promise<ConfirmRegistrationResult> {
+    return this.authService.confirmRegistration(dto);
   }
 }
