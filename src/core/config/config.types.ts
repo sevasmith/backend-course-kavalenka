@@ -19,6 +19,8 @@ export interface Config {
    */
   THROTTLE_GLOBAL_TTL?: number;
   THROTTLE_GLOBAL_LIMIT?: number;
+  THROTTLE_REGISTRATION_TTL?: number;
+  THROTTLE_REGISTRATION_LIMIT?: number;
 
   /**
    * Registration options

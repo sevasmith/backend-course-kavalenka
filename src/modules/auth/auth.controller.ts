@@ -7,6 +7,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
+import { RegistrationThrottle } from '@/core/throttler/throttler.decorators';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
@@ -26,6 +27,7 @@ export class AuthController {
    * confirmation. `passthrough` keeps Nest serializing the returned body.
    */
   @Post('register')
+  @RegistrationThrottle()
   async register(
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) reply: FastifyReply,
@@ -56,6 +58,7 @@ export class AuthController {
    * pending registration for the email, 429 when asked again within 60 seconds.
    */
   @Post('register/resend')
+  @RegistrationThrottle()
   @HttpCode(HttpStatus.ACCEPTED)
   resendRegistration(
     @Body() dto: ResendRegistrationDto,

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -56,6 +57,9 @@ export class AuthService {
     private readonly mailService: MailService,
   ) {}
 
+  /**
+   * Logs ids and statuses only: never the email, password, hash or secret.
+   */
   async register(
     dto: RegisterDto,
   ): Promise<RegisterResult | RegisterPendingResult> {
@@ -64,24 +68,37 @@ export class AuthService {
     );
     const passwordHash = await this.passwordService.hash(dto.password);
 
-    if (confirmationEnabled) {
-      // The transaction has committed by now: if the email fails, the pending
-      // user and the attempt stay, and the client asks for a resend.
-      const { result, secret } = await this.registerPending(
-        dto.email,
+    try {
+      if (confirmationEnabled) {
+        // The transaction has committed by now: if the email fails, the
+        // pending user and the attempt stay, and the client asks for a resend.
+        const { result, secret } = await this.registerPending(
+          dto.email,
+          passwordHash,
+        );
+        this.logger.log(
+          `Registration created, status=${UserStatus.PENDING}, attemptId=${result.attemptId}`,
+        );
+        await this.sendRegistrationEmail(dto.email, result, secret);
+        return result;
+      }
+
+      const user = await this.usersService.createUser({
+        email: dto.email,
         passwordHash,
+        status: UserStatus.ACTIVE,
+      });
+      this.logger.log(
+        `Registration created, status=${user.status}, userId=${user.id}`,
       );
-      await this.sendRegistrationEmail(dto.email, result, secret);
-      return result;
+
+      return { id: user.id, email: user.email, status: user.status };
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        this.logger.warn('Registration rejected, reason=email_taken');
+      }
+      throw error;
     }
-
-    const user = await this.usersService.createUser({
-      email: dto.email,
-      passwordHash,
-      status: UserStatus.ACTIVE,
-    });
-
-    return { id: user.id, email: user.email, status: user.status };
   }
 
   /**
@@ -368,14 +385,16 @@ export class AuthService {
       // connection is an AggregateError with an empty message.
       const { code, message } = error as Error & { code?: string };
       this.logger.error(
-        `Registration email failed, attemptId=${attemptId}: ${code ?? 'unknown'} ${message}`,
+        `Registration email failed, method=${method}, attemptId=${attemptId}: ${code ?? 'unknown'} ${message}`,
       );
       throw new ServiceUnavailableException(
         'Confirmation email could not be sent',
       );
     }
 
-    this.logger.log(`Registration email sent, attemptId=${attemptId}`);
+    this.logger.log(
+      `Registration email sent, method=${method}, attemptId=${attemptId}`,
+    );
   }
 
   /**

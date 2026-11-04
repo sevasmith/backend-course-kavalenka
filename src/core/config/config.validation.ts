@@ -21,6 +21,8 @@ export const configValidationSchema = Joi.object<Config>({
    */
   THROTTLE_GLOBAL_TTL: Joi.number().optional().default(10000),
   THROTTLE_GLOBAL_LIMIT: Joi.number().optional().default(10),
+  THROTTLE_REGISTRATION_TTL: Joi.number().optional().default(60000),
+  THROTTLE_REGISTRATION_LIMIT: Joi.number().optional().default(5),
 
   /**
    * Registration options
