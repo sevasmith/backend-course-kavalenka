@@ -43,6 +43,12 @@ export const INVALID_REGISTRATION_CONFIRMATION_MESSAGE =
 export const REGISTRATION_ATTEMPTS_EXHAUSTED_MESSAGE =
   'Too many incorrect confirmation attempts, request a new code';
 
+/**
+ * 429: the previous email was sent less than 60 seconds ago.
+ */
+export const REGISTRATION_RESEND_TOO_SOON_MESSAGE =
+  'Confirmation email was sent recently, try again later';
+
 export interface CreatedRegistrationChallenge {
   challenge: RegistrationChallenge;
   /**

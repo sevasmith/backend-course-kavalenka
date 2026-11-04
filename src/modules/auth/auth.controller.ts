@@ -9,6 +9,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
+import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import { AuthService } from './auth.service';
 import {
   ConfirmRegistrationResult,
@@ -48,5 +49,17 @@ export class AuthController {
     @Body() dto: ConfirmRegistrationDto,
   ): Promise<ConfirmRegistrationResult> {
     return this.authService.confirmRegistration(dto);
+  }
+
+  /**
+   * 202 with the same body as a pending registration; 400 when there is no
+   * pending registration for the email, 429 when asked again within 60 seconds.
+   */
+  @Post('register/resend')
+  @HttpCode(HttpStatus.ACCEPTED)
+  resendRegistration(
+    @Body() dto: ResendRegistrationDto,
+  ): Promise<RegisterPendingResult> {
+    return this.authService.resendRegistration(dto);
   }
 }

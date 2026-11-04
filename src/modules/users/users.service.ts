@@ -25,6 +25,10 @@ export class UsersService {
     }
   }
 
+  findByEmail(email: string): Promise<User | null> {
+    return this.usersRepository.findOne({ where: { email } });
+  }
+
   /**
    * Locks the user row until the transaction ends, so the status cannot change
    * between the check and the update. Must be called inside a transaction.

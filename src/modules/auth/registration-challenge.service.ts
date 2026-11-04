@@ -88,6 +88,21 @@ export class RegistrationChallengeService {
   }
 
   /**
+   * The newest attempt of the user, whatever its state: the resend cooldown is
+   * counted from it. Locked the same way as the other lookups. Must be called
+   * inside a transaction.
+   */
+  findLatestForUserForUpdate(
+    userId: string,
+  ): Promise<RegistrationChallenge | null> {
+    return this.challengesRepository.findOne({
+      where: { userId },
+      order: { lastSentAt: 'DESC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+  }
+
+  /**
    * Constant-time comparison of the HMACs: `===` stops at the first different
    * character, and the response time would leak how much of the hash matched.
    */

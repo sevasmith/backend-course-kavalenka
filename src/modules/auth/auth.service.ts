@@ -13,6 +13,7 @@ import { PasswordService } from './password.service';
 import { UsersService } from '../users/users.service';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
+import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import {
   ConfirmationOutcome,
   ConfirmRegistrationResult,
@@ -21,12 +22,14 @@ import {
 } from './auth.types';
 import { UserStatus } from '../users/user.types';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { RegistrationChallenge } from './registration-challenge.entity';
 import {
   INVALID_REGISTRATION_CONFIRMATION_MESSAGE,
   REGISTRATION_ATTEMPTS_EXHAUSTED_MESSAGE,
   REGISTRATION_CHALLENGE_MAX_ATTEMPTS,
   REGISTRATION_CHALLENGE_RESEND_AFTER_SECONDS,
   REGISTRATION_CHALLENGE_TTL_SECONDS,
+  REGISTRATION_RESEND_TOO_SOON_MESSAGE,
   RegistrationChallengeConsumedReason,
   RegistrationChallengeMethod,
 } from './registration-challenge.types';
@@ -224,6 +227,102 @@ export class AuthService {
   }
 
   /**
+   * Like `register`, the email goes out only after the transaction commits:
+   * if it fails, the new attempt stays and the client gets a 503.
+   */
+  async resendRegistration(
+    dto: ResendRegistrationDto,
+  ): Promise<RegisterPendingResult> {
+    const { result, secret } = await this.replaceChallenge(dto.email);
+    await this.sendRegistrationEmail(dto.email, result, secret);
+    return result;
+  }
+
+  /**
+   * One transaction: consumes the newest attempt as `replaced` (its code or
+   * token stops working) and creates a new one with a fresh TTL and counter.
+   * Rejections happen before any write, so throwing here rolls back nothing.
+   *
+   * Locks the attempt first, then the user: the same order as
+   * `applyConfirmation`, so a resend and a confirmation cannot deadlock.
+   *
+   * The method comes from the old attempt, not from the config, and the flag
+   * is not checked: an issued attempt can be resent even if they changed.
+   */
+  @Transactional()
+  private async replaceChallenge(
+    email: string,
+  ): Promise<{ result: RegisterPendingResult; secret: string }> {
+    const user = await this.usersService.findByEmail(email);
+    const challenge = user
+      ? await this.registrationChallengeService.findLatestForUserForUpdate(
+          user.id,
+        )
+      : null;
+
+    // A parallel resend replaced this attempt while we waited for the lock:
+    // an email was just sent, so it is the same as a resend that is too soon.
+    if (
+      challenge?.consumedReason === RegistrationChallengeConsumedReason.REPLACED
+    ) {
+      this.logRejectedResend('too_soon', challenge.id);
+      throw new HttpException(
+        REGISTRATION_RESEND_TOO_SOON_MESSAGE,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const lockedUser = challenge
+      ? await this.usersService.findByIdForUpdate(challenge.userId)
+      : null;
+
+    // Unknown email, no attempt, or the user is no longer pending (already
+    // confirmed, blocked, deleted): the same 400 as for a confirmation.
+    if (!challenge || lockedUser?.status !== UserStatus.PENDING) {
+      this.logRejectedResend('not_pending', challenge?.id);
+      throw new BadRequestException(INVALID_REGISTRATION_CONFIRMATION_MESSAGE);
+    }
+
+    const resendAllowedAt =
+      challenge.lastSentAt.getTime() +
+      REGISTRATION_CHALLENGE_RESEND_AFTER_SECONDS * 1000;
+    if (Date.now() < resendAllowedAt) {
+      this.logRejectedResend('too_soon', challenge.id);
+      throw new HttpException(
+        REGISTRATION_RESEND_TOO_SOON_MESSAGE,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    // Also for an attempt already consumed after five wrong codes: `replaced`
+    // is what tells a parallel resend waiting on this lock to stop.
+    await this.registrationChallengeService.consume(
+      challenge,
+      RegistrationChallengeConsumedReason.REPLACED,
+    );
+    const created = await this.registrationChallengeService.create(
+      lockedUser.id,
+      challenge.method,
+    );
+
+    this.logger.log(
+      `Registration attempt replaced, oldAttemptId=${challenge.id}, ` +
+        `attemptId=${created.challenge.id}, userId=${lockedUser.id}`,
+    );
+
+    return {
+      result: toPendingResult(created.challenge),
+      secret: created.secret,
+    };
+  }
+
+  private logRejectedResend(reason: string, attemptId?: string): void {
+    this.logger.warn(
+      `Registration resend rejected, reason=${reason}, attemptId=${attemptId ?? 'unknown'}`,
+    );
+  }
+
+  /**
    * Creates the pending user and its confirmation attempt in one transaction:
    * if saving the attempt fails, the user is rolled back too.
    */
@@ -244,16 +343,7 @@ export class AuthService {
     const { challenge, secret } =
       await this.registrationChallengeService.create(user.id, method);
 
-    return {
-      result: {
-        confirmationRequired: true,
-        method: challenge.method,
-        attemptId: challenge.id,
-        expiresInSeconds: REGISTRATION_CHALLENGE_TTL_SECONDS,
-        resendAfterSeconds: REGISTRATION_CHALLENGE_RESEND_AFTER_SECONDS,
-      },
-      secret,
-    };
+    return { result: toPendingResult(challenge), secret };
   }
 
   /**
@@ -298,4 +388,19 @@ export class AuthService {
     url.hash = secret;
     return url.toString();
   }
+}
+
+/**
+ * The 202 body of `register` and `resend`. The secret is never part of it.
+ */
+function toPendingResult(
+  challenge: RegistrationChallenge,
+): RegisterPendingResult {
+  return {
+    confirmationRequired: true,
+    method: challenge.method,
+    attemptId: challenge.id,
+    expiresInSeconds: REGISTRATION_CHALLENGE_TTL_SECONDS,
+    resendAfterSeconds: REGISTRATION_CHALLENGE_RESEND_AFTER_SECONDS,
+  };
 }
