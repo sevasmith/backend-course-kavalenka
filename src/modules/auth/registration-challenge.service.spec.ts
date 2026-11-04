@@ -108,6 +108,16 @@ describe('RegistrationChallengeService', () => {
     });
   });
 
+  it('finds the newest attempt of a user, in any state, and locks the row', async () => {
+    await service.findLatestForUserForUpdate('user-id');
+
+    expect(repository.findOne).toHaveBeenCalledWith({
+      where: { userId: 'user-id' },
+      order: { lastSentAt: 'DESC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+  });
+
   it('returns null when nothing matches', async () => {
     await expect(
       service.findMagicLinkAttemptForUpdate('token'),

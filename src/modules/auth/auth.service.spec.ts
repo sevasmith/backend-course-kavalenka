@@ -1,7 +1,9 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   HttpStatus,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -34,6 +36,7 @@ describe('AuthService', () => {
   let passwordService: { hash: jest.Mock };
   let usersService: {
     createUser: jest.Mock;
+    findByEmail: jest.Mock;
     findByIdForUpdate: jest.Mock;
     updateStatus: jest.Mock;
   };
@@ -41,6 +44,7 @@ describe('AuthService', () => {
     create: jest.Mock;
     findOtpAttemptForUpdate: jest.Mock;
     findMagicLinkAttemptForUpdate: jest.Mock;
+    findLatestForUserForUpdate: jest.Mock;
     secretMatches: jest.Mock;
     registerWrongSecret: jest.Mock;
     consume: jest.Mock;
@@ -50,7 +54,19 @@ describe('AuthService', () => {
     sendRegistrationMagicLink: jest.Mock;
   };
 
+  let logs: string[];
+
   beforeEach(async () => {
+    // Captures every log line (and keeps the test output quiet).
+    logs = [];
+    for (const level of ['log', 'warn', 'error'] as const) {
+      jest
+        .spyOn(Logger.prototype, level)
+        .mockImplementation((message: unknown) => {
+          logs.push(String(message));
+        });
+    }
+
     config = { get: jest.fn() };
     passwordService = { hash: jest.fn().mockResolvedValue(hash) };
     usersService = {
@@ -62,6 +78,7 @@ describe('AuthService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       } satisfies User),
+      findByEmail: jest.fn(),
       findByIdForUpdate: jest.fn(),
       updateStatus: jest.fn().mockResolvedValue(undefined),
     };
@@ -75,6 +92,7 @@ describe('AuthService', () => {
       }),
       findOtpAttemptForUpdate: jest.fn(),
       findMagicLinkAttemptForUpdate: jest.fn(),
+      findLatestForUserForUpdate: jest.fn(),
       secretMatches: jest.fn(),
       registerWrongSecret: jest.fn(),
       consume: jest.fn().mockResolvedValue(undefined),
@@ -99,7 +117,23 @@ describe('AuthService', () => {
     }).compile();
 
     service = module.get<AuthService>(AuthService);
+    // Drop Nest's own startup lines: only the service's logs are checked.
+    logs = [];
   });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  /**
+   * The log must not contain the password, its hash, the secret or the email.
+   */
+  const expectLogsWithout = (...values: string[]) => {
+    expect(logs.length).toBeGreaterThan(0);
+    for (const value of [dto.email, dto.password, hash, ...values]) {
+      for (const line of logs) {
+        expect(line).not.toContain(value);
+      }
+    }
+  };
 
   describe('register with confirmation disabled', () => {
     beforeEach(() => config.get.mockReturnValue(false));
@@ -456,6 +490,314 @@ describe('AuthService', () => {
         expect(challengeService.consume).not.toHaveBeenCalled();
         expect(usersService.updateStatus).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('register logs', () => {
+    it('logs an active registration with the user id only', async () => {
+      config.get.mockReturnValue(false);
+
+      await service.register(dto);
+
+      expect(logs).toContain(
+        'Registration created, status=active, userId=user-id',
+      );
+      expectLogsWithout();
+    });
+
+    it('logs the pending registration and the sent email without the code', async () => {
+      config.get.mockImplementation(
+        (key: string) =>
+          ({
+            REGISTRATION_EMAIL_CONFIRMATION_ENABLED: true,
+            REGISTRATION_EMAIL_CONFIRMATION_METHOD:
+              RegistrationChallengeMethod.OTP,
+          })[key],
+      );
+
+      await service.register(dto);
+
+      expect(logs).toEqual([
+        'Registration created, status=pending, attemptId=attempt-id',
+        'Registration email sent, method=otp, attemptId=attempt-id',
+      ]);
+      expectLogsWithout('123456');
+    });
+
+    it('logs a failed email without the code', async () => {
+      config.get.mockImplementation(
+        (key: string) =>
+          ({ REGISTRATION_EMAIL_CONFIRMATION_ENABLED: true })[key],
+      );
+      mailService.sendRegistrationOtp.mockRejectedValue(
+        new Error('ECONNREFUSED'),
+      );
+
+      await expect(service.register(dto)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(logs).toContainEqual(
+        expect.stringContaining('Registration email failed'),
+      );
+      expectLogsWithout('123456');
+    });
+
+    it('logs a taken email without the email and still returns 409', async () => {
+      config.get.mockReturnValue(false);
+      usersService.createUser.mockRejectedValue(
+        new ConflictException('Email is already registered'),
+      );
+
+      await expect(service.register(dto)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(logs).toEqual(['Registration rejected, reason=email_taken']);
+      expectLogsWithout();
+    });
+  });
+
+  describe('resendRegistration', () => {
+    const resendDto = { email: dto.email };
+    const secondsAgo = (seconds: number) =>
+      new Date(Date.now() - seconds * 1000);
+
+    const oldAttempt = (
+      overrides: Partial<RegistrationChallenge> = {},
+    ): RegistrationChallenge =>
+      ({
+        id: 'old-attempt-id',
+        userId: 'user-id',
+        method: RegistrationChallengeMethod.OTP,
+        secretHash: 'hash',
+        expiresAt: new Date(Date.now() + 600_000),
+        attempts: 2,
+        lastSentAt: secondsAgo(61),
+        consumedAt: null,
+        consumedReason: null,
+        ...overrides,
+      }) as RegistrationChallenge;
+
+    const user = (status = UserStatus.PENDING) => ({
+      id: 'user-id',
+      email: dto.email,
+      passwordHash: hash,
+      status,
+    });
+
+    const expectInvalid = async (promise: Promise<unknown>) => {
+      await expect(promise).rejects.toBeInstanceOf(BadRequestException);
+      await expect(promise).rejects.toThrow(
+        'Invalid or expired confirmation code or token',
+      );
+    };
+
+    const expectTooSoon = async (promise: Promise<unknown>) => {
+      await expect(promise).rejects.toMatchObject({
+        status: HttpStatus.TOO_MANY_REQUESTS,
+      });
+    };
+
+    const expectNothingWritten = () => {
+      expect(challengeService.consume).not.toHaveBeenCalled();
+      expect(challengeService.create).not.toHaveBeenCalled();
+      expect(mailService.sendRegistrationOtp).not.toHaveBeenCalled();
+      expect(mailService.sendRegistrationMagicLink).not.toHaveBeenCalled();
+    };
+
+    beforeEach(() => {
+      // The flag is off: an issued attempt can be resent anyway.
+      config.get.mockImplementation(
+        (key: string) =>
+          ({
+            REGISTRATION_EMAIL_CONFIRMATION_ENABLED: false,
+            REGISTRATION_EMAIL_CONFIRMATION_METHOD:
+              RegistrationChallengeMethod.OTP,
+            REGISTRATION_CONFIRM_URL: 'http://localhost:3000/register/confirm',
+          })[key],
+      );
+      usersService.findByEmail.mockResolvedValue(user());
+      usersService.findByIdForUpdate.mockResolvedValue(user());
+      challengeService.findLatestForUserForUpdate.mockResolvedValue(
+        oldAttempt(),
+      );
+      challengeService.create.mockResolvedValue({
+        challenge: {
+          id: 'new-attempt-id',
+          method: RegistrationChallengeMethod.OTP,
+        },
+        secret: '654321',
+      });
+    });
+
+    describe('success', () => {
+      it('replaces the old attempt with a new one and returns the 202 body', async () => {
+        await expect(service.resendRegistration(resendDto)).resolves.toEqual({
+          confirmationRequired: true,
+          method: RegistrationChallengeMethod.OTP,
+          attemptId: 'new-attempt-id',
+          expiresInSeconds: 600,
+          resendAfterSeconds: 60,
+        });
+        expect(challengeService.consume).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'old-attempt-id' }),
+          RegistrationChallengeConsumedReason.REPLACED,
+        );
+        // A new row: new secret, fresh TTL and a counter at 0.
+        expect(challengeService.create).toHaveBeenCalledWith(
+          'user-id',
+          RegistrationChallengeMethod.OTP,
+        );
+      });
+
+      it('emails the new code', async () => {
+        await service.resendRegistration(resendDto);
+
+        expect(mailService.sendRegistrationOtp).toHaveBeenCalledWith(
+          dto.email,
+          '654321',
+        );
+      });
+
+      it('keeps the method of the old attempt, not the configured one', async () => {
+        challengeService.findLatestForUserForUpdate.mockResolvedValue(
+          oldAttempt({ method: RegistrationChallengeMethod.MAGIC_LINK }),
+        );
+        challengeService.create.mockResolvedValue({
+          challenge: {
+            id: 'new-attempt-id',
+            method: RegistrationChallengeMethod.MAGIC_LINK,
+          },
+          secret: 'token',
+        });
+
+        await service.resendRegistration(resendDto);
+
+        expect(challengeService.create).toHaveBeenCalledWith(
+          'user-id',
+          RegistrationChallengeMethod.MAGIC_LINK,
+        );
+        expect(mailService.sendRegistrationMagicLink).toHaveBeenCalledWith(
+          dto.email,
+          'http://localhost:3000/register/confirm#token',
+        );
+      });
+
+      it('allows a resend after the attempt was exhausted by five wrong codes', async () => {
+        challengeService.findLatestForUserForUpdate.mockResolvedValue(
+          oldAttempt({
+            attempts: 5,
+            consumedAt: secondsAgo(61),
+            consumedReason:
+              RegistrationChallengeConsumedReason.ATTEMPTS_EXHAUSTED,
+          }),
+        );
+
+        await expect(
+          service.resendRegistration(resendDto),
+        ).resolves.toMatchObject({ attemptId: 'new-attempt-id' });
+        expect(challengeService.consume).toHaveBeenCalledWith(
+          expect.anything(),
+          RegistrationChallengeConsumedReason.REPLACED,
+        );
+      });
+
+      it('allows a resend after the attempt expired', async () => {
+        challengeService.findLatestForUserForUpdate.mockResolvedValue(
+          oldAttempt({ expiresAt: secondsAgo(1), lastSentAt: secondsAgo(601) }),
+        );
+
+        await expect(
+          service.resendRegistration(resendDto),
+        ).resolves.toMatchObject({ attemptId: 'new-attempt-id' });
+      });
+
+      it('locks the attempt before the user, like the confirmation', async () => {
+        await service.resendRegistration(resendDto);
+
+        const [attemptLock] =
+          challengeService.findLatestForUserForUpdate.mock.invocationCallOrder;
+        const [userLock] =
+          usersService.findByIdForUpdate.mock.invocationCallOrder;
+        expect(attemptLock).toBeLessThan(userLock);
+      });
+
+      it('logs the replacement without the code or the email', async () => {
+        await service.resendRegistration(resendDto);
+
+        expect(logs).toEqual([
+          'Registration attempt replaced, oldAttemptId=old-attempt-id, ' +
+            'attemptId=new-attempt-id, userId=user-id',
+          'Registration email sent, method=otp, attemptId=new-attempt-id',
+        ]);
+        expectLogsWithout('654321');
+      });
+    });
+
+    describe('too soon', () => {
+      it('returns 429 when the last email was sent less than 60 seconds ago', async () => {
+        challengeService.findLatestForUserForUpdate.mockResolvedValue(
+          oldAttempt({ lastSentAt: secondsAgo(30) }),
+        );
+
+        await expectTooSoon(service.resendRegistration(resendDto));
+        expectNothingWritten();
+      });
+
+      it('returns 429 when a parallel resend replaced the attempt first', async () => {
+        challengeService.findLatestForUserForUpdate.mockResolvedValue(
+          oldAttempt({
+            consumedAt: new Date(),
+            consumedReason: RegistrationChallengeConsumedReason.REPLACED,
+          }),
+        );
+
+        await expectTooSoon(service.resendRegistration(resendDto));
+        expectNothingWritten();
+      });
+    });
+
+    describe('no pending registration', () => {
+      it('returns 400 for an unknown email', async () => {
+        usersService.findByEmail.mockResolvedValue(null);
+
+        await expectInvalid(service.resendRegistration(resendDto));
+        expect(
+          challengeService.findLatestForUserForUpdate,
+        ).not.toHaveBeenCalled();
+        expectNothingWritten();
+      });
+
+      it('returns 400 when the user has no attempt', async () => {
+        challengeService.findLatestForUserForUpdate.mockResolvedValue(null);
+
+        await expectInvalid(service.resendRegistration(resendDto));
+        expectNothingWritten();
+      });
+
+      it.each([
+        UserStatus.ACTIVE,
+        UserStatus.BLOCKED,
+        UserStatus.DELETING,
+        UserStatus.DELETED,
+      ])('returns 400 when the user is %s', async (status) => {
+        usersService.findByIdForUpdate.mockResolvedValue(user(status));
+
+        await expectInvalid(service.resendRegistration(resendDto));
+        expectNothingWritten();
+      });
+    });
+
+    it('returns 503 and keeps the new attempt when the email fails', async () => {
+      mailService.sendRegistrationOtp.mockRejectedValue(
+        new Error('ECONNREFUSED'),
+      );
+
+      await expect(
+        service.resendRegistration(resendDto),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(challengeService.consume).toHaveBeenCalled();
+      expect(challengeService.create).toHaveBeenCalled();
+      expectLogsWithout('654321');
     });
   });
 });

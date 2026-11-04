@@ -63,6 +63,14 @@ describe('UsersService', () => {
     await expect(service.createUser(data)).rejects.toBe(error);
   });
 
+  it('finds a user by email without locking', async () => {
+    await service.findByEmail('user@example.com');
+
+    expect(repository.findOne).toHaveBeenCalledWith({
+      where: { email: 'user@example.com' },
+    });
+  });
+
   it('finds a user by id and locks the row', async () => {
     await service.findByIdForUpdate('user-id');
 
