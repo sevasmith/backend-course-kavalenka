@@ -46,6 +46,28 @@ export class RegistrationChallengeService {
     return { challenge, secret };
   }
 
+  /**
+   * OTP: found by id only. Comparing the code happens later, against this one
+   * attempt: a 6-digit HMAC must never be searched across the whole table.
+   */
+  findOtpAttempt(attemptId: string): Promise<RegistrationChallenge | null> {
+    return this.challengesRepository.findOneBy({
+      id: attemptId,
+      method: RegistrationChallengeMethod.OTP,
+    });
+  }
+
+  /**
+   * Magic link: found by the HMAC of the token (partial unique index). The
+   * method filter stops an OTP code sent as a token from matching an OTP row.
+   */
+  findMagicLinkAttempt(token: string): Promise<RegistrationChallenge | null> {
+    return this.challengesRepository.findOneBy({
+      secretHash: this.hmac(token),
+      method: RegistrationChallengeMethod.MAGIC_LINK,
+    });
+  }
+
   private hmac(secret: string): string {
     return createHmac(
       'sha256',

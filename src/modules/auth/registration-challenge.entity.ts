@@ -10,6 +10,15 @@ import {
 import { User } from '../users/user.entity';
 import { RegistrationChallengeMethod } from './registration-challenge.types';
 
+/**
+ * A magic link attempt is found by the HMAC of its token, so the lookup needs
+ * an index. It is unique and partial: two OTP attempts can have the same
+ * 6-digit code and therefore the same HMAC, but a 32-byte token cannot repeat.
+ */
+@Index('IDX_registration_challenges_magic_link_secret_hash', ['secretHash'], {
+  unique: true,
+  where: `"method" = 'magic_link'`,
+})
 @Entity('registration_challenges')
 export class RegistrationChallenge {
   @PrimaryGeneratedColumn('uuid')

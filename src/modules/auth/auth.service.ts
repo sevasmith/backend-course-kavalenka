@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -9,10 +10,13 @@ import { MailService } from '@/core/mail/mail.service';
 import { PasswordService } from './password.service';
 import { UsersService } from '../users/users.service';
 import { RegisterDto } from './dto/register.dto';
+import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { RegisterPendingResult, RegisterResult } from './auth.types';
 import { UserStatus } from '../users/user.types';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { RegistrationChallenge } from './registration-challenge.entity';
 import {
+  INVALID_REGISTRATION_CONFIRMATION_MESSAGE,
   REGISTRATION_CHALLENGE_RESEND_AFTER_SECONDS,
   REGISTRATION_CHALLENGE_TTL_SECONDS,
   RegistrationChallengeMethod,
@@ -56,6 +60,34 @@ export class AuthService {
     });
 
     return { id: user.id, email: user.email, status: user.status };
+  }
+
+  /**
+   * Step 7: finds the attempt by the form of the body. The method comes from
+   * the saved attempt, not from the config: an issued attempt stays valid
+   * even if the confirmation flag or method changes.
+   */
+  async confirmRegistration(
+    dto: ConfirmRegistrationDto,
+  ): Promise<RegistrationChallenge> {
+    const challenge =
+      dto.token !== undefined
+        ? await this.registrationChallengeService.findMagicLinkAttempt(
+            dto.token,
+          )
+        : await this.registrationChallengeService.findOtpAttempt(
+            dto.attemptId!,
+          );
+
+    // Not found, wrong method and consumed give the same 400 as a wrong code.
+    if (!challenge || challenge.consumedAt !== null) {
+      throw new BadRequestException(INVALID_REGISTRATION_CONFIRMATION_MESSAGE);
+    }
+
+    // TODO(step 8): reject expired (no counter increment), check the attempt
+    // limit (429), compare the OTP code in constant time, then activate the
+    // user and consume the attempt in one transaction, and return 200.
+    return challenge;
   }
 
   /**
@@ -105,7 +137,7 @@ export class AuthService {
       } else {
         await this.mailService.sendRegistrationMagicLink(
           email,
-          this.buildMagicLink(attemptId, secret),
+          this.buildMagicLink(secret),
         );
       }
     } catch (error) {
@@ -125,11 +157,12 @@ export class AuthService {
 
   /**
    * The token goes into the fragment (#): browsers never send it to the
-   * server, so opening the link cannot change state.
+   * server, so opening the link cannot change state. The token is only the
+   * secret: the attempt is found by its HMAC, not by an id.
    */
-  private buildMagicLink(attemptId: string, secret: string): string {
+  private buildMagicLink(secret: string): string {
     const url = new URL(this.configService.get('REGISTRATION_CONFIRM_URL')!);
-    url.hash = `${attemptId}.${secret}`;
+    url.hash = secret;
     return url.toString();
   }
 }

@@ -14,7 +14,11 @@ describe('RegistrationChallengeService', () => {
     createHmac('sha256', hmacKey).update(secret).digest('hex');
 
   let service: RegistrationChallengeService;
-  let repository: { create: jest.Mock; save: jest.Mock };
+  let repository: {
+    create: jest.Mock;
+    save: jest.Mock;
+    findOneBy: jest.Mock;
+  };
 
   beforeEach(async () => {
     repository = {
@@ -22,6 +26,7 @@ describe('RegistrationChallengeService', () => {
       save: jest.fn((input: object) =>
         Promise.resolve({ id: 'attempt-id', ...input }),
       ),
+      findOneBy: jest.fn().mockResolvedValue(null),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -68,5 +73,27 @@ describe('RegistrationChallengeService', () => {
     expect(challenge.expiresAt.getTime() - challenge.lastSentAt.getTime()).toBe(
       600_000,
     );
+  });
+
+  it('finds an OTP attempt by id and only among OTP attempts', async () => {
+    await service.findOtpAttempt('attempt-id');
+
+    expect(repository.findOneBy).toHaveBeenCalledWith({
+      id: 'attempt-id',
+      method: RegistrationChallengeMethod.OTP,
+    });
+  });
+
+  it('finds a magic link attempt by the HMAC of the token, not the token', async () => {
+    await service.findMagicLinkAttempt('token');
+
+    expect(repository.findOneBy).toHaveBeenCalledWith({
+      secretHash: hmac('token'),
+      method: RegistrationChallengeMethod.MAGIC_LINK,
+    });
+  });
+
+  it('returns null when nothing matches', async () => {
+    await expect(service.findMagicLinkAttempt('token')).resolves.toBeNull();
   });
 });
