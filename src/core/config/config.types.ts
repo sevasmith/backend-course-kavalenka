@@ -1,3 +1,5 @@
+export type RegistrationConfirmationMethod = 'otp' | 'magic_link';
+
 export interface Config {
   PORT: number;
   NODE_ENV: 'development' | 'production' | 'test';
@@ -17,6 +19,26 @@ export interface Config {
    */
   THROTTLE_GLOBAL_TTL?: number;
   THROTTLE_GLOBAL_LIMIT?: number;
+  THROTTLE_REGISTRATION_TTL?: number;
+  THROTTLE_REGISTRATION_LIMIT?: number;
+
+  /**
+   * Registration options
+   */
+  REGISTRATION_EMAIL_CONFIRMATION_ENABLED?: boolean;
+  REGISTRATION_EMAIL_CONFIRMATION_METHOD: RegistrationConfirmationMethod;
+  REGISTRATION_CHALLENGE_HMAC_KEY: string;
+  REGISTRATION_CONFIRM_URL?: string;
+
+  /**
+   * SMTP options
+   */
+  SMTP_HOST: string;
+  SMTP_PORT: number;
+  SMTP_SECURE?: boolean;
+  SMTP_USER?: string;
+  SMTP_PASSWORD?: string;
+  SMTP_FROM: string;
 
   /**
    * PostgreSQL database options

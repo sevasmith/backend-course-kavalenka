@@ -11,6 +11,7 @@ import { ThrottlerModule } from '@/core/throttler/throttler.module';
  *
  */
 import { UsersModule } from '@/modules/users/users.module';
+import { AuthModule } from '@/modules/auth/auth.module';
 
 @Module({
   imports: [
@@ -18,11 +19,7 @@ import { UsersModule } from '@/modules/users/users.module';
     DatabaseModule,
     HealthModule,
     ThrottlerModule,
-    /**
-     *
-     * Application modules
-     *
-     */
+    AuthModule,
     UsersModule,
   ],
 })
