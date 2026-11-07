@@ -138,6 +138,65 @@ describe('Registration (e2e)', () => {
         .send({ email: newEmail(), password: 'onlyletters' })
         .expect(400);
     });
+
+    it('stores the email trimmed and lowercased', async () => {
+      const email = newEmail();
+
+      await register(`  ${email.toUpperCase()} `).expect(202);
+
+      expect(await userByEmail(email)).toBeDefined();
+    });
+
+    it('treats a +tag address as a separate email', async () => {
+      const email = newEmail();
+      await register(email).expect(202);
+
+      await register(email.replace('@', '+tag@')).expect(202);
+    });
+
+    it('stores only a hash of the emailed code', async () => {
+      const email = newEmail();
+      const body = await accepted(register(email));
+
+      const rows: { secret_hash: string }[] = await db.query(
+        `SELECT secret_hash FROM registration_challenges WHERE id = $1`,
+        [body.attemptId],
+      );
+      expect(rows[0].secret_hash).not.toContain(mail.lastSecret(email));
+    });
+
+    it('answers 409, not 500, to two parallel registrations of one email', async () => {
+      const email = newEmail();
+
+      const responses = await Promise.all([register(email), register(email)]);
+
+      const statuses = responses.map((res) => res.status).sort();
+      expect(statuses).toEqual([202, 409]);
+    });
+  });
+
+  describe('password policy', () => {
+    const registerWith = (pwd: string) =>
+      http().post('/auth/register').send({ email: newEmail(), password: pwd });
+
+    it('rejects a password shorter than 8 characters', async () => {
+      await registerWith('secret1').expect(400);
+    });
+
+    it('rejects a password without a letter', async () => {
+      await registerWith('12345678').expect(400);
+    });
+
+    it('accepts a letter of any alphabet', async () => {
+      await registerWith('пароль12').expect(202);
+    });
+
+    it('accepts 128 characters and rejects a longer password instead of cutting it', async () => {
+      const longest = 'a1'.repeat(64);
+
+      await registerWith(longest).expect(202);
+      await registerWith(`${longest}x`).expect(400);
+    });
   });
 
   describe('confirmation edge cases', () => {
