@@ -44,6 +44,11 @@ export const configValidationSchema = Joi.object<Config>({
     }),
 
   /**
+   * RBAC options
+   */
+  RBAC_BOOTSTRAP_ADMIN_USER_ID: Joi.string().uuid().optional(),
+
+  /**
    * SMTP options
    */
   SMTP_HOST: Joi.string().hostname().required(),
