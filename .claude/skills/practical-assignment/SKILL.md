@@ -1,7 +1,7 @@
 ---
 name: practical-assignment
-description: Create a short, step-by-step plan for the Practical Assignment of one theory file in docs/theory and save it to docs/plans. Use when Seva says they are working on a theory file's Practical Assignment and asks for a plan, e.g. "/practical-assignment 1.1 RBAC".
-argument-hint: <number> <name of the theory file>, e.g. 1.1 RBAC
+description: Create a short, step-by-step plan for the Practical Assignment of one theory file in docs/theory and save it to docs/plans. Use when Seva says they are working on a theory file's Practical Assignment and asks for a plan, e.g. "/practical-assignment 1.1" or "/practical-assignment 1.1 RBAC".
+argument-hint: <number> [name of the theory file], e.g. 1.1 or 1.1 RBAC
 ---
 
 # Practical Assignment plan
@@ -10,7 +10,8 @@ Create a general plan for the Practical Assignment of the theory file named in t
 
 ## 1. Find the theory file
 
-- Match the arguments against the files in `docs/theory/` by number first (e.g. `1.1`), then by name. Example: `1.1 RBAC` → `docs/theory/1.1 RBAC.md`.
+- The number alone is enough: find the file in `docs/theory/` whose name starts with that number followed by a space. Example: `1.1` → `docs/theory/1.1 RBAC.md`.
+- If a name is given too (`1.1 RBAC`), match by number first. If there's no number, match by name.
 - If there are no arguments, or no file or several files match, list the theory files and ask which one. Don't guess.
 
 ## 2. Gather the context
@@ -53,8 +54,8 @@ Read, in this order:
   ```markdown
   # <number> <Name> — Plan
 
-  1. <step>
-  2. <step>
+  - [ ] 1. <step>
+  - [ ] 2. <step>
   ...
 
   ## Notes
@@ -62,7 +63,8 @@ Read, in this order:
   - <mismatch or open question, only if there are any>
   ```
 
-- If the file already exists, show Seva what would change and ask before overwriting it.
+- Every step is an unticked checkbox with its number. The step is ticked (`- [x]`) once it is done and reviewed (see the `review-task` skill). Keep the numbers stable: other skills refer to tasks by number.
+- If the file already exists, show Seva what would change and ask before overwriting it. Keep the ticks of steps that are already done.
 
 ## 5. Report back
 
