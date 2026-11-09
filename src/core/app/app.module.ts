@@ -12,6 +12,7 @@ import { ThrottlerModule } from '@/core/throttler/throttler.module';
  */
 import { UsersModule } from '@/modules/users/users.module';
 import { AuthModule } from '@/modules/auth/auth.module';
+import { RbacModule } from '@/modules/rbac/rbac.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { AuthModule } from '@/modules/auth/auth.module';
     ThrottlerModule,
     AuthModule,
     UsersModule,
+    RbacModule,
   ],
 })
 export class AppModule {}
