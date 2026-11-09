@@ -27,13 +27,15 @@ The rule is: **CASCADE** when the child is just a detail of its parent, **RESTRI
 
 | Delete… | What happens in the DB | What the API does |
 | --- | --- | --- |
-| a permission | its actions and grants are deleted (CASCADE); the grants' `grant_actions` go too | returns **409** if any grant uses it, so the cascade never fires through the API |
+| a permission | its actions and grants are deleted (CASCADE), **but only if no grant lists its actions explicitly**: otherwise RESTRICT on `grant_actions` blocks the whole delete (see below) | returns **409** if any grant uses it, so the cascade never fires through the API |
 | a permission action (removed in `PUT /permissions/{id}`) | **blocked** if any `grant_actions` row uses it (RESTRICT) | returns **409**; if only `all_actions = true` grants use it, it is removed without a conflict |
 | a role | its grants are deleted (CASCADE); **blocked** if any user has it (RESTRICT) | returns **409** if any user or grant uses it |
 | a grant | its `grant_actions` are deleted (CASCADE) | allowed, but rejected with **409** if it would leave 0 users with `rbac@manage` |
 | a user (hard delete) | its `user_roles` are deleted (CASCADE) | the user is never hard-deleted through the API; deletion (1.6) removes `user_roles` itself and bumps the version |
 
 RESTRICT is a safety net: even with a bug in a service, the DB never leaves a user pointing at a missing role or a grant pointing at a missing action.
+
+**RESTRICT vs NO ACTION.** PostgreSQL checks RESTRICT immediately, when the referenced row is deleted. NO ACTION waits until the end of the statement, after all cascades. Deleting a permission cascades along two paths: `permissions → permission_actions` and `permissions → grants → grant_actions`. RESTRICT fires on the first path before the second one has removed the `grant_actions` rows, so the delete fails. With NO ACTION it would succeed. `task.md` requires RESTRICT, and the API never deletes a permission that still has grants, so this is the intended behaviour.
 
 ## Indexes
 
