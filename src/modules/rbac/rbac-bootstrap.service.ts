@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
@@ -79,9 +79,13 @@ export type RbacBootstrapOutcome =
  *
  * Without an admin the bootstrap is skipped, not run partly: a non-empty RBAC
  * is never bootstrapped again, so nobody could ever get `rbac@manage`.
+ *
+ * It runs in `onModuleInit`: Nest finishes that hook in every module before
+ * any `onApplicationBootstrap`, so the first policy snapshot load sees the
+ * bootstrapped policy. Hooks of one kind run in parallel within a module.
  */
 @Injectable()
-export class RbacBootstrapService implements OnApplicationBootstrap {
+export class RbacBootstrapService implements OnModuleInit {
   private readonly logger = new Logger(RbacBootstrapService.name);
 
   constructor(
@@ -104,7 +108,7 @@ export class RbacBootstrapService implements OnApplicationBootstrap {
     private readonly policyStateRepository: Repository<RbacPolicyState>,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  async onModuleInit(): Promise<void> {
     const outcome = await this.bootstrapIfEmpty();
 
     switch (outcome.status) {

@@ -236,12 +236,12 @@ describe('RbacBootstrapService', () => {
     });
   });
 
-  describe('onApplicationBootstrap', () => {
+  describe('onModuleInit', () => {
     it('logs a warning when the bootstrap is skipped', async () => {
       config.get.mockReturnValue(undefined);
       const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
 
-      await service.onApplicationBootstrap();
+      await service.onModuleInit();
 
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining('reason=admin_not_configured'),

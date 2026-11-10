@@ -7,6 +7,7 @@ import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
 import { RbacBootstrapService } from './rbac-bootstrap.service';
+import { RbacPolicySnapshotService } from './rbac-policy-snapshot.service';
 import { RbacPolicyState } from './rbac-policy-state.entity';
 import { Role } from './role.entity';
 import { UserRole } from './user-role.entity';
@@ -25,6 +26,7 @@ import { UserRole } from './user-role.entity';
       User,
     ]),
   ],
-  providers: [RbacBootstrapService],
+  providers: [RbacBootstrapService, RbacPolicySnapshotService],
+  exports: [RbacPolicySnapshotService],
 })
 export class RbacModule {}
