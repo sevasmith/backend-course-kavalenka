@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HealthCheckService } from '@nestjs/terminus';
 import { HealthService } from './health.service';
+import { RbacPolicyHealthIndicator } from '@/modules/rbac/rbac-policy.health';
 
 describe('HealthService', () => {
   let service: HealthService;
@@ -10,6 +11,10 @@ describe('HealthService', () => {
       providers: [
         HealthService,
         { provide: HealthCheckService, useValue: { check: jest.fn() } },
+        {
+          provide: RbacPolicyHealthIndicator,
+          useValue: { isHealthy: jest.fn() },
+        },
       ],
     }).compile();
 
