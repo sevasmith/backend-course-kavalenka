@@ -7,6 +7,7 @@ import { Grant } from './grant.entity';
 import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
+import { RbacAuthorizationService } from './rbac-authorization.service';
 import { RbacPolicyHealthIndicator } from './rbac-policy.health';
 import { RbacBootstrapService } from './rbac-bootstrap.service';
 import { RbacPolicySnapshotService } from './rbac-policy-snapshot.service';
@@ -34,7 +35,12 @@ import { UserRole } from './user-role.entity';
     RbacBootstrapService,
     RbacPolicySnapshotService,
     RbacPolicyHealthIndicator,
+    RbacAuthorizationService,
   ],
-  exports: [RbacPolicySnapshotService, RbacPolicyHealthIndicator],
+  exports: [
+    RbacPolicySnapshotService,
+    RbacPolicyHealthIndicator,
+    RbacAuthorizationService,
+  ],
 })
 export class RbacModule {}
