@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import { TerminusModule } from '@nestjs/terminus';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
@@ -12,11 +13,15 @@ import { RbacPolicyHealthIndicator } from './rbac-policy.health';
 import { RbacBootstrapService } from './rbac-bootstrap.service';
 import { RbacPolicySnapshotService } from './rbac-policy-snapshot.service';
 import { RbacPolicyState } from './rbac-policy-state.entity';
+import { RbacRouteScanner } from './rbac-route-scanner';
+import { RbacGuard } from './rbac.guard';
 import { Role } from './role.entity';
 import { UserRole } from './user-role.entity';
 
 @Module({
   imports: [
+    // Lets the route scanner list every controller at startup.
+    DiscoveryModule,
     // Provides `HealthIndicatorService` for the readiness indicator.
     TerminusModule,
     TypeOrmModule.forFeature([
@@ -36,6 +41,9 @@ import { UserRole } from './user-role.entity';
     RbacPolicySnapshotService,
     RbacPolicyHealthIndicator,
     RbacAuthorizationService,
+    RbacRouteScanner,
+    // The central guard: runs for every route of the app.
+    { provide: APP_GUARD, useClass: RbacGuard },
   ],
   exports: [
     RbacPolicySnapshotService,
