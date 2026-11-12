@@ -1,10 +1,9 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { User } from './user.entity';
-import { QueryFailedError, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
+import { isUniqueViolation } from '@/core/database/pg-errors';
 import { CreateUserData, UserStatus } from './user.types';
-
-const PG_UNIQUE_VIOLATION = '23505';
 
 @Injectable()
 export class UsersService {
@@ -43,11 +42,4 @@ export class UsersService {
   async updateStatus(id: string, status: UserStatus): Promise<void> {
     await this.usersRepository.update(id, { status });
   }
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    error instanceof QueryFailedError &&
-    (error.driverError as { code?: string }).code === PG_UNIQUE_VIOLATION
-  );
 }
