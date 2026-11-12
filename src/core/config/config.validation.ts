@@ -12,9 +12,10 @@ export const configValidationSchema = Joi.object<Config>({
   COOKIE_SECRET: Joi.string().required(),
 
   /**
-   * Health check options
+   * Health check options. On by default: `/health` is the readiness check,
+   * and it must fail while the RBAC policy is unavailable (1.1 RBAC).
    */
-  HEALTH_CHECK_ENABLED: Joi.boolean().optional().default(false),
+  HEALTH_CHECK_ENABLED: Joi.boolean().optional().default(true),
 
   /**
    * Throttler options
