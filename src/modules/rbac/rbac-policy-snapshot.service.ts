@@ -156,9 +156,13 @@ export class RbacPolicySnapshotService implements OnApplicationBootstrap {
    * as it was at the first one. With the default READ COMMITTED, an admin
    * change committed between two queries could mix old and new rows, and the
    * version read here could belong to neither.
+   *
+   * Called inside another transaction (the admin change helper), it joins
+   * that transaction instead (`Propagation.REQUIRED`) and so sees its
+   * uncommitted rows: that is how the change is checked before the commit.
    */
   @Transactional({ isolationLevel: IsolationLevel.REPEATABLE_READ })
-  private async readPolicyRows(): Promise<RbacPolicyRows> {
+  async readPolicyRows(): Promise<RbacPolicyRows> {
     // Sequential: one transaction is one connection, and pg runs one query
     // at a time on it anyway.
     const version = await this.readVersion();
