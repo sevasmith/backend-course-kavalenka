@@ -1,6 +1,15 @@
 import { applyDecorators } from '@nestjs/common';
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 
 /**
  * Role, permission and action names (`task.md`): 1 to 64 characters, a
@@ -9,6 +18,11 @@ import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 export const RBAC_NAME_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 
 export const RBAC_DESCRIPTION_MAX_LENGTH = 500;
+
+export const RBAC_MAX_ACTIONS = 64;
+
+const RBAC_NAME_MESSAGE =
+  'must be 1-64 characters: a lowercase letter, then lowercase letters, digits, ".", "_" or "-"';
 
 /** Trims and lowercases a string; leaves other types for the validators. */
 export function normalizeRbacName(value: unknown): unknown {
@@ -24,8 +38,7 @@ export const IsRbacName = () =>
     Transform(({ value }: { value: unknown }) => normalizeRbacName(value)),
     IsString(),
     Matches(RBAC_NAME_PATTERN, {
-      message:
-        '$property must be 1-64 characters: a lowercase letter, then lowercase letters, digits, ".", "_" or "-"',
+      message: `$property ${RBAC_NAME_MESSAGE}`,
     }),
   );
 
@@ -45,4 +58,25 @@ export const IsRbacDescription = () =>
     IsOptional(),
     IsString(),
     MaxLength(RBAC_DESCRIPTION_MAX_LENGTH),
+  );
+
+/**
+ * A list of action names: each one normalized and validated like a name,
+ * 1 to 64 of them, no repeats after normalization (`Read` and `read` are the
+ * same action, so sending both is a 400, not a silent merge).
+ */
+export const IsRbacActionList = () =>
+  applyDecorators(
+    Transform(({ value }: { value: unknown }) =>
+      Array.isArray(value) ? value.map(normalizeRbacName) : value,
+    ),
+    IsArray(),
+    ArrayMinSize(1),
+    ArrayMaxSize(RBAC_MAX_ACTIONS),
+    IsString({ each: true }),
+    Matches(RBAC_NAME_PATTERN, {
+      each: true,
+      message: `each value in $property ${RBAC_NAME_MESSAGE}`,
+    }),
+    ArrayUnique(undefined, { message: '$property must not contain repeats' }),
   );

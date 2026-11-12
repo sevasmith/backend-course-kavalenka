@@ -14,6 +14,8 @@ import { RbacPolicyHealthIndicator } from './rbac-policy.health';
 import { RbacBootstrapService } from './rbac-bootstrap.service';
 import { RbacPolicySnapshotService } from './rbac-policy-snapshot.service';
 import { RbacPolicyState } from './rbac-policy-state.entity';
+import { RbacPermissionsController } from './rbac-permissions.controller';
+import { RbacPermissionsService } from './rbac-permissions.service';
 import { RbacRolesController } from './rbac-roles.controller';
 import { RbacRolesService } from './rbac-roles.service';
 import { RbacRouteScanner } from './rbac-route-scanner';
@@ -39,7 +41,7 @@ import { UserRole } from './user-role.entity';
       User,
     ]),
   ],
-  controllers: [RbacRolesController],
+  controllers: [RbacRolesController, RbacPermissionsController],
   providers: [
     RbacBootstrapService,
     RbacPolicySnapshotService,
@@ -47,6 +49,7 @@ import { UserRole } from './user-role.entity';
     RbacAuthorizationService,
     RbacPolicyChangeService,
     RbacRolesService,
+    RbacPermissionsService,
     RbacRouteScanner,
     // The central guard: runs for every route of the app.
     { provide: APP_GUARD, useClass: RbacGuard },
