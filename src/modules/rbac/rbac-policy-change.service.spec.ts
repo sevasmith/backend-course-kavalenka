@@ -1,8 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { In } from 'typeorm';
+
+import { User } from '@/modules/users/user.entity';
+import { UserStatus } from '@/modules/users/user.types';
 
 import {
-  hasRbacManager,
+  findRbacManagerIds,
   RbacManageInvariantError,
   RbacPolicyChangeService,
 } from './rbac-policy-change.service';
@@ -63,25 +67,27 @@ const policyRows = (
 const ADMIN = { userId: 'alice', roleId: 'role-admin' };
 const USER = { userId: 'bob', roleId: 'role-user' };
 
-describe('hasRbacManager', () => {
-  it('is true when a user has rbac@manage through an explicit grant', () => {
-    expect(hasRbacManager(buildPolicySnapshot(policyRows([ADMIN, USER])))).toBe(
-      true,
+describe('findRbacManagerIds', () => {
+  it('finds users with rbac@manage through an explicit grant', () => {
+    expect(
+      findRbacManagerIds(buildPolicySnapshot(policyRows([ADMIN, USER]))),
+    ).toEqual(['alice']);
+  });
+
+  it('finds users with rbac@manage through an all-actions grant', () => {
+    expect(
+      findRbacManagerIds(buildPolicySnapshot(policyRows([ADMIN], 'all'))),
+    ).toEqual(['alice']);
+  });
+
+  it('finds nobody when no user has rbac@manage', () => {
+    expect(findRbacManagerIds(buildPolicySnapshot(policyRows([USER])))).toEqual(
+      [],
     );
   });
 
-  it('is true when a user has rbac@manage through an all-actions grant', () => {
-    expect(
-      hasRbacManager(buildPolicySnapshot(policyRows([ADMIN], 'all'))),
-    ).toBe(true);
-  });
-
-  it('is false when no user has rbac@manage', () => {
-    expect(hasRbacManager(buildPolicySnapshot(policyRows([USER])))).toBe(false);
-  });
-
-  it('is false when nobody has roles', () => {
-    expect(hasRbacManager(buildPolicySnapshot(policyRows([])))).toBe(false);
+  it('finds nobody when nobody has roles', () => {
+    expect(findRbacManagerIds(buildPolicySnapshot(policyRows([])))).toEqual([]);
   });
 });
 
@@ -89,6 +95,7 @@ describe('RbacPolicyChangeService', () => {
   let service: RbacPolicyChangeService;
   let policyState: { findOne: jest.Mock; update: jest.Mock };
   let snapshotService: { readPolicyRows: jest.Mock };
+  let users: { existsBy: jest.Mock };
   let calls: string[];
   let change: jest.Mock;
 
@@ -115,6 +122,13 @@ describe('RbacPolicyChangeService', () => {
       }),
     };
 
+    users = {
+      existsBy: jest.fn().mockImplementation(() => {
+        calls.push('check');
+        return Promise.resolve(true);
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RbacPolicyChangeService,
@@ -123,6 +137,7 @@ describe('RbacPolicyChangeService', () => {
           provide: getRepositoryToken(RbacPolicyState),
           useValue: policyState,
         },
+        { provide: getRepositoryToken(User), useValue: users },
       ],
     }).compile();
 
@@ -135,7 +150,7 @@ describe('RbacPolicyChangeService', () => {
       version: 6,
     });
 
-    expect(calls).toEqual(['lock', 'change', 'read', 'bump']);
+    expect(calls).toEqual(['lock', 'change', 'read', 'check', 'bump']);
     expect(policyState.findOne).toHaveBeenCalledWith({
       where: { id: 1 },
       lock: { mode: 'pessimistic_write' },
@@ -150,6 +165,33 @@ describe('RbacPolicyChangeService', () => {
       RbacManageInvariantError,
     );
     expect(policyState.update).not.toHaveBeenCalled();
+  });
+
+  it('counts only active users as rbac@manage holders', async () => {
+    await service.apply(change);
+
+    expect(users.existsBy).toHaveBeenCalledWith({
+      id: In(['alice']),
+      status: UserStatus.ACTIVE,
+    });
+  });
+
+  it('rejects a change when every rbac@manage holder is inactive', async () => {
+    users.existsBy.mockResolvedValue(false);
+
+    await expect(service.apply(change)).rejects.toThrow(
+      RbacManageInvariantError,
+    );
+    expect(policyState.update).not.toHaveBeenCalled();
+  });
+
+  it('does not query users when nobody holds rbac@manage', async () => {
+    snapshotService.readPolicyRows.mockResolvedValue(policyRows([USER]));
+
+    await expect(service.apply(change)).rejects.toThrow(
+      RbacManageInvariantError,
+    );
+    expect(users.existsBy).not.toHaveBeenCalled();
   });
 
   it('rejects a change that breaks the policy graph', async () => {

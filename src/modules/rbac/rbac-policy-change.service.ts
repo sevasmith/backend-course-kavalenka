@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 
+import { User } from '@/modules/users/user.entity';
+import { UserStatus } from '@/modules/users/user.types';
 import { isAllowed } from './rbac-authorization.service';
 import {
   buildPolicySnapshot,
@@ -17,12 +19,12 @@ const POLICY_STATE_ID = 1;
 export const RBAC_MANAGE = { permission: 'rbac', action: 'manage' } as const;
 
 /**
- * The change would leave no user with `rbac@manage`. The whole transaction
- * is rolled back; the API answers 409 `conflict` (mapped in task 15).
+ * The change would leave no active user with `rbac@manage`. The whole
+ * transaction is rolled back; the API answers 409 `conflict` (task 15).
  */
 export class RbacManageInvariantError extends Error {
   constructor() {
-    super('The change would leave no user with rbac@manage');
+    super('The change would leave no active user with rbac@manage');
     this.name = RbacManageInvariantError.name;
   }
 }
@@ -34,16 +36,14 @@ export interface RbacPolicyChangeResult<T> {
   version: number;
 }
 
-/** `true` if at least one user may do `rbac@manage` in this snapshot. */
-export function hasRbacManager(snapshot: RbacPolicySnapshot): boolean {
-  for (const userId of snapshot.userRoles.keys()) {
-    if (
-      isAllowed(snapshot, userId, RBAC_MANAGE.permission, RBAC_MANAGE.action)
-    ) {
-      return true;
-    }
-  }
-  return false;
+/**
+ * The users who may do `rbac@manage` in this snapshot, whatever their
+ * account status (the snapshot doesn't know it).
+ */
+export function findRbacManagerIds(snapshot: RbacPolicySnapshot): string[] {
+  return [...snapshot.userRoles.keys()].filter((userId) =>
+    isAllowed(snapshot, userId, RBAC_MANAGE.permission, RBAC_MANAGE.action),
+  );
 }
 
 /**
@@ -56,6 +56,8 @@ export class RbacPolicyChangeService {
     private readonly snapshotService: RbacPolicySnapshotService,
     @InjectRepository(RbacPolicyState)
     private readonly policyStateRepository: Repository<RbacPolicyState>,
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
   ) {}
 
   /**
@@ -67,7 +69,9 @@ export class RbacPolicyChangeService {
    * 2. Runs `change`. It must write through the injected repositories, so
    *    its queries join this transaction.
    * 3. Reads the resulting policy (uncommitted rows included) and builds a
-   *    snapshot: an invalid graph or no `rbac@manage` holder throws.
+   *    snapshot: an invalid graph throws, and so does a policy where no
+   *    `active` user holds `rbac@manage`. A blocked or deleted admin can't
+   *    log in, so they don't count.
    * 4. Increments the version, so every instance reloads its snapshot.
    *
    * Any throw rolls back both the change and the version.
@@ -87,7 +91,7 @@ export class RbacPolicyChangeService {
     const snapshot = buildPolicySnapshot(
       await this.snapshotService.readPolicyRows(),
     );
-    if (!hasRbacManager(snapshot)) {
+    if (!(await this.hasActiveRbacManager(snapshot))) {
       throw new RbacManageInvariantError();
     }
 
@@ -95,5 +99,18 @@ export class RbacPolicyChangeService {
     await this.policyStateRepository.update(POLICY_STATE_ID, { version });
 
     return { result, version };
+  }
+
+  private async hasActiveRbacManager(
+    snapshot: RbacPolicySnapshot,
+  ): Promise<boolean> {
+    const managerIds = findRbacManagerIds(snapshot);
+    if (managerIds.length === 0) {
+      return false;
+    }
+    return this.usersRepository.existsBy({
+      id: In(managerIds),
+      status: UserStatus.ACTIVE,
+    });
   }
 }
