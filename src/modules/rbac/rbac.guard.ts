@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
+import { apiError, ErrorCode } from '@/core/http/api-error';
 import { getRouteAccess } from './rbac.decorators';
 import { RbacAuthorizationService } from './rbac-authorization.service';
 
@@ -25,9 +26,12 @@ export interface AuthenticatedRequest {
  * a global guard). Default deny: only `@Public()` routes and routes whose
  * `permission@action` the user holds get through.
  *
- * The exact error bodies (`permission_denied`, `authorization_unavailable`)
- * come in task 15. `RbacPolicyUnavailableError` from `authorize` is not
- * caught here on purpose: it must become a 503, not a 403.
+ * Errors: 401 `invalid_session`, 403 `permission_denied` (the defaults for
+ * those statuses, see `AllExceptionsFilter`) and 503
+ * `authorization_unavailable`. The 403 is the same for every denial: it
+ * never names the missing permission or the user's roles.
+ * `RbacPolicyUnavailableError` from `authorize` is not caught here on
+ * purpose: it is already a 503, and must not become a 403.
  */
 @Injectable()
 export class RbacGuard implements CanActivate {
@@ -55,7 +59,12 @@ export class RbacGuard implements CanActivate {
         // through anyway, it is blocked, never opened (`task.md`: 503).
         const route = `${context.getClass().name}.${context.getHandler().name}`;
         this.logger.error(`Route ${route} has ${access.kind} access, denied`);
-        throw new ServiceUnavailableException();
+        throw new ServiceUnavailableException(
+          apiError(
+            ErrorCode.AUTHORIZATION_UNAVAILABLE,
+            'Route access is not declared',
+          ),
+        );
       }
 
       case 'permission': {

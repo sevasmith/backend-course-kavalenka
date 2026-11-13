@@ -1,8 +1,14 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IsolationLevel, Transactional } from 'typeorm-transactional';
 
+import { apiError, ErrorCode } from '@/core/http/api-error';
 import { Grant } from './grant.entity';
 import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
@@ -20,13 +26,19 @@ const POLICY_STATE_ID = 1;
 
 /**
  * There is no current policy to check against: the snapshot could not be
- * loaded, is invalid, or its version could not be read. The request must be
- * denied with 503 `authorization_unavailable` (mapped in task 15).
+ * loaded, is invalid, or its version could not be read. The request is
+ * denied with 503 `authorization_unavailable`; the global exception filter
+ * replaces the message with a neutral one.
  */
-export class RbacPolicyUnavailableError extends Error {
+export class RbacPolicyUnavailableError extends ServiceUnavailableException {
   constructor(options?: { cause?: unknown }) {
-    super('RBAC policy is unavailable', options);
-    this.name = RbacPolicyUnavailableError.name;
+    super(
+      apiError(
+        ErrorCode.AUTHORIZATION_UNAVAILABLE,
+        'RBAC policy is unavailable',
+      ),
+      options,
+    );
   }
 }
 

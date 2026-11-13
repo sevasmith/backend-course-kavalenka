@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
@@ -20,12 +20,12 @@ export const RBAC_MANAGE = { permission: 'rbac', action: 'manage' } as const;
 
 /**
  * The change would leave no active user with `rbac@manage`. The whole
- * transaction is rolled back; the API answers 409 `conflict` (task 15).
+ * transaction is rolled back; the API answers 409 `conflict`. Only admins
+ * with `rbac@manage` get here, so the message reveals nothing new.
  */
-export class RbacManageInvariantError extends Error {
+export class RbacManageInvariantError extends ConflictException {
   constructor() {
     super('The change would leave no active user with rbac@manage');
-    this.name = RbacManageInvariantError.name;
   }
 }
 
