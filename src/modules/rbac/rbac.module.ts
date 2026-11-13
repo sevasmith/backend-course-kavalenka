@@ -8,6 +8,8 @@ import { Grant } from './grant.entity';
 import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
+import { RbacGrantsController } from './rbac-grants.controller';
+import { RbacGrantsService } from './rbac-grants.service';
 import { RbacAuthorizationService } from './rbac-authorization.service';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 import { RbacPolicyHealthIndicator } from './rbac-policy.health';
@@ -41,7 +43,11 @@ import { UserRole } from './user-role.entity';
       User,
     ]),
   ],
-  controllers: [RbacRolesController, RbacPermissionsController],
+  controllers: [
+    RbacRolesController,
+    RbacPermissionsController,
+    RbacGrantsController,
+  ],
   providers: [
     RbacBootstrapService,
     RbacPolicySnapshotService,
@@ -50,6 +56,7 @@ import { UserRole } from './user-role.entity';
     RbacPolicyChangeService,
     RbacRolesService,
     RbacPermissionsService,
+    RbacGrantsService,
     RbacRouteScanner,
     // The central guard: runs for every route of the app.
     { provide: APP_GUARD, useClass: RbacGuard },

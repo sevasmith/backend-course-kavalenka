@@ -60,23 +60,32 @@ export const IsRbacDescription = () =>
     MaxLength(RBAC_DESCRIPTION_MAX_LENGTH),
   );
 
+/** The rules every action list shares, whatever its minimum size. */
+const actionListRules = () => [
+  Transform(({ value }: { value: unknown }) =>
+    Array.isArray(value) ? value.map(normalizeRbacName) : value,
+  ),
+  IsArray(),
+  ArrayMaxSize(RBAC_MAX_ACTIONS),
+  IsString({ each: true }),
+  Matches(RBAC_NAME_PATTERN, {
+    each: true,
+    message: `each value in $property ${RBAC_NAME_MESSAGE}`,
+  }),
+  ArrayUnique(undefined, { message: '$property must not contain repeats' }),
+];
+
 /**
  * A list of action names: each one normalized and validated like a name,
  * 1 to 64 of them, no repeats after normalization (`Read` and `read` are the
  * same action, so sending both is a 400, not a silent merge).
  */
 export const IsRbacActionList = () =>
-  applyDecorators(
-    Transform(({ value }: { value: unknown }) =>
-      Array.isArray(value) ? value.map(normalizeRbacName) : value,
-    ),
-    IsArray(),
-    ArrayMinSize(1),
-    ArrayMaxSize(RBAC_MAX_ACTIONS),
-    IsString({ each: true }),
-    Matches(RBAC_NAME_PATTERN, {
-      each: true,
-      message: `each value in $property ${RBAC_NAME_MESSAGE}`,
-    }),
-    ArrayUnique(undefined, { message: '$property must not contain repeats' }),
-  );
+  applyDecorators(ArrayMinSize(1), ...actionListRules());
+
+/**
+ * The same list for a grant, where it may be missing or empty: that means
+ * "all current and future actions of the permission" (`all_actions`).
+ */
+export const IsOptionalRbacActionList = () =>
+  applyDecorators(IsOptional(), ...actionListRules());
