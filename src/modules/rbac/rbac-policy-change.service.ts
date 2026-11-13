@@ -78,13 +78,7 @@ export class RbacPolicyChangeService {
    */
   @Transactional()
   async apply<T>(change: () => Promise<T>): Promise<RbacPolicyChangeResult<T>> {
-    const state = await this.policyStateRepository.findOne({
-      where: { id: POLICY_STATE_ID },
-      lock: { mode: 'pessimistic_write' },
-    });
-    if (!state) {
-      throw new Error('rbac_policy_state row is missing, run the migrations');
-    }
+    const state = await this.lockState();
 
     const result = await change();
 
@@ -95,10 +89,47 @@ export class RbacPolicyChangeService {
       throw new RbacManageInvariantError();
     }
 
+    return { result, version: await this.bumpVersion(state) };
+  }
+
+  /**
+   * Like `apply`, but without reading the policy and the `rbac@manage`
+   * check. Only for changes that **add** rights and never remove any, such
+   * as giving a newly active user the `user` role.
+   *
+   * The invariant protects admin operations (`task.md`). Adding a role can't
+   * break it, so checking it here would only make an unrelated flow fail:
+   * e.g. every registration would get a 500 while the only admin is still
+   * `pending` or is blocked.
+   *
+   * Still locks the state row and bumps the version, so every instance
+   * reloads its snapshot and sees the new rights.
+   */
+  @Transactional()
+  async applyAddition<T>(
+    change: () => Promise<T>,
+  ): Promise<RbacPolicyChangeResult<T>> {
+    const state = await this.lockState();
+    const result = await change();
+    return { result, version: await this.bumpVersion(state) };
+  }
+
+  /** `SELECT ... FOR UPDATE` on the single state row. */
+  private async lockState(): Promise<RbacPolicyState> {
+    const state = await this.policyStateRepository.findOne({
+      where: { id: POLICY_STATE_ID },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!state) {
+      throw new Error('rbac_policy_state row is missing, run the migrations');
+    }
+    return state;
+  }
+
+  private async bumpVersion(state: RbacPolicyState): Promise<number> {
     const version = state.version + 1;
     await this.policyStateRepository.update(POLICY_STATE_ID, { version });
-
-    return { result, version };
+    return version;
   }
 
   private async hasActiveRbacManager(

@@ -221,4 +221,43 @@ describe('RbacPolicyChangeService', () => {
     );
     expect(change).not.toHaveBeenCalled();
   });
+
+  describe('applyAddition', () => {
+    it('locks, changes and bumps the version without the invariant check', async () => {
+      await expect(service.applyAddition(change)).resolves.toEqual({
+        result: 'created',
+        version: 6,
+      });
+
+      expect(calls).toEqual(['lock', 'change', 'bump']);
+      expect(snapshotService.readPolicyRows).not.toHaveBeenCalled();
+      expect(users.existsBy).not.toHaveBeenCalled();
+    });
+
+    it('succeeds even when no active user holds rbac@manage', async () => {
+      users.existsBy.mockResolvedValue(false);
+
+      await expect(service.applyAddition(change)).resolves.toMatchObject({
+        version: 6,
+      });
+    });
+
+    it('does not bump the version when the change fails', async () => {
+      const failing = jest.fn().mockRejectedValue(new Error('fk violation'));
+
+      await expect(service.applyAddition(failing)).rejects.toThrow(
+        'fk violation',
+      );
+      expect(policyState.update).not.toHaveBeenCalled();
+    });
+
+    it('fails without running the change when the state row is missing', async () => {
+      policyState.findOne.mockResolvedValue(null);
+
+      await expect(service.applyAddition(change)).rejects.toThrow(
+        'rbac_policy_state row is missing',
+      );
+      expect(change).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -17,7 +17,7 @@ describe('RbacDefaultRoleService', () => {
   let service: RbacDefaultRoleService;
   let roles: { findOneBy: jest.Mock };
   let userRoles: { existsBy: jest.Mock; insert: jest.Mock };
-  let policyChange: { apply: jest.Mock };
+  let policyChange: { applyAddition: jest.Mock };
 
   beforeEach(async () => {
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
@@ -34,7 +34,7 @@ describe('RbacDefaultRoleService', () => {
     };
     // The real helper joins the caller's transaction; here it just runs it.
     policyChange = {
-      apply: jest.fn(async (change: () => Promise<unknown>) => ({
+      applyAddition: jest.fn(async (change: () => Promise<unknown>) => ({
         result: await change(),
         version: 7,
       })),
@@ -54,13 +54,13 @@ describe('RbacDefaultRoleService', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
-  it('inserts the user role in a policy change (version + 1)', async () => {
+  it('inserts the user role as an addition (version + 1, no invariant check)', async () => {
     await expect(service.assignToActivatedUser(USER_ID)).resolves.toBe(
       'assigned',
     );
 
     expect(roles.findOneBy).toHaveBeenCalledWith({ name: DEFAULT_ROLE_NAME });
-    expect(policyChange.apply).toHaveBeenCalledTimes(1);
+    expect(policyChange.applyAddition).toHaveBeenCalledTimes(1);
     expect(userRoles.insert).toHaveBeenCalledWith({
       userId: USER_ID,
       roleId: ROLE_ID,
@@ -73,7 +73,7 @@ describe('RbacDefaultRoleService', () => {
     await expect(service.assignToActivatedUser(USER_ID)).resolves.toBe(
       'already_assigned',
     );
-    expect(policyChange.apply).not.toHaveBeenCalled();
+    expect(policyChange.applyAddition).not.toHaveBeenCalled();
   });
 
   it('skips without an error when RBAC is not bootstrapped', async () => {
@@ -82,12 +82,12 @@ describe('RbacDefaultRoleService', () => {
     await expect(service.assignToActivatedUser(USER_ID)).resolves.toBe(
       'rbac_not_initialized',
     );
-    expect(policyChange.apply).not.toHaveBeenCalled();
+    expect(policyChange.applyAddition).not.toHaveBeenCalled();
   });
 
   it('lets a failed insert through, so the caller rolls back the activation', async () => {
     const failure = new Error('db down');
-    policyChange.apply.mockRejectedValue(failure);
+    policyChange.applyAddition.mockRejectedValue(failure);
 
     await expect(service.assignToActivatedUser(USER_ID)).rejects.toBe(failure);
   });

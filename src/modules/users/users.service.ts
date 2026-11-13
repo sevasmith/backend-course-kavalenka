@@ -31,11 +31,18 @@ export class UsersService {
   /**
    * Locks the user row until the transaction ends, so the status cannot change
    * between the check and the update. Must be called inside a transaction.
+   *
+   * `FOR NO KEY UPDATE`, not `FOR UPDATE`: it still blocks other writers of
+   * this row, but not the foreign key checks of inserts that reference it
+   * (e.g. `user_roles`). With `FOR UPDATE`, a confirmation (user row, then
+   * the RBAC state row) and an admin role change for the same user (state
+   * row, then the user's FK check) could deadlock. Enough here, because the
+   * id is never changed.
    */
   findByIdForUpdate(id: string): Promise<User | null> {
     return this.usersRepository.findOne({
       where: { id },
-      lock: { mode: 'pessimistic_write' },
+      lock: { mode: 'for_no_key_update' },
     });
   }
 

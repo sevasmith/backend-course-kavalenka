@@ -36,7 +36,7 @@ export class RbacDefaultRoleService {
 
   /**
    * Must be called inside the caller's transaction (`@Transactional`):
-   * `apply` joins it, so the role and `version + 1` commit together with
+   * `applyAddition` joins it, so the role and `version + 1` commit together with
    * the activation.
    *
    * Skips without an error when the `user` role doesn't exist (`task.md`:
@@ -57,7 +57,9 @@ export class RbacDefaultRoleService {
       return 'already_assigned';
     }
 
-    const { version } = await this.policyChange.apply(() =>
+    // Adds a right and removes none, so the `rbac@manage` check is skipped:
+    // registration must not depend on the admin's status.
+    const { version } = await this.policyChange.applyAddition(() =>
       this.userRolesRepository.insert({ userId, roleId: role.id }),
     );
     this.logger.log(
