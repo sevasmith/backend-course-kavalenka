@@ -10,6 +10,7 @@ import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
 import { RbacGrantsController } from './rbac-grants.controller';
 import { RbacGrantsService } from './rbac-grants.service';
+import { RbacDefaultRoleService } from './rbac-default-role.service';
 import { RbacAuthorizationService } from './rbac-authorization.service';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 import { RbacPolicyHealthIndicator } from './rbac-policy.health';
@@ -62,6 +63,7 @@ import { UserRole } from './user-role.entity';
     RbacPermissionsService,
     RbacGrantsService,
     RbacUserRolesService,
+    RbacDefaultRoleService,
     RbacRouteScanner,
     // The central guard: runs for every route of the app.
     { provide: APP_GUARD, useClass: RbacGuard },
@@ -70,6 +72,8 @@ import { UserRole } from './user-role.entity';
     RbacPolicySnapshotService,
     RbacPolicyHealthIndicator,
     RbacAuthorizationService,
+    // Registration assigns the `user` role on activation.
+    RbacDefaultRoleService,
   ],
 })
 export class RbacModule {}
