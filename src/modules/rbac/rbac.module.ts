@@ -20,6 +20,8 @@ import { RbacPermissionsController } from './rbac-permissions.controller';
 import { RbacPermissionsService } from './rbac-permissions.service';
 import { RbacRolesController } from './rbac-roles.controller';
 import { RbacRolesService } from './rbac-roles.service';
+import { RbacUserRolesController } from './rbac-user-roles.controller';
+import { RbacUserRolesService } from './rbac-user-roles.service';
 import { RbacRouteScanner } from './rbac-route-scanner';
 import { RbacGuard } from './rbac.guard';
 import { Role } from './role.entity';
@@ -39,7 +41,8 @@ import { UserRole } from './user-role.entity';
       GrantAction,
       UserRole,
       RbacPolicyState,
-      // Read-only here: the bootstrap checks that the admin user exists.
+      // Read-only here: the bootstrap and user-role assignment check that
+      // the user exists.
       User,
     ]),
   ],
@@ -47,6 +50,7 @@ import { UserRole } from './user-role.entity';
     RbacRolesController,
     RbacPermissionsController,
     RbacGrantsController,
+    RbacUserRolesController,
   ],
   providers: [
     RbacBootstrapService,
@@ -57,6 +61,7 @@ import { UserRole } from './user-role.entity';
     RbacRolesService,
     RbacPermissionsService,
     RbacGrantsService,
+    RbacUserRolesService,
     RbacRouteScanner,
     // The central guard: runs for every route of the app.
     { provide: APP_GUARD, useClass: RbacGuard },
