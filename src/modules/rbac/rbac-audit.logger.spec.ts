@@ -64,6 +64,19 @@ describe('RbacAuditLogger', () => {
     );
   });
 
+  it('logs an access check that could not run', () => {
+    audit.accessUnavailable({
+      actorUserId: 'admin',
+      permission: 'rbac',
+      action: 'manage',
+      operation: 'RbacRolesController.create',
+    });
+
+    expect(warn).toHaveBeenCalledWith(
+      'rbac.access.unavailable actorUserId=admin permission=rbac action=manage operation=RbacRolesController.create result=503',
+    );
+  });
+
   it('logs an access denial', () => {
     audit.accessDenied({
       actorUserId: 'alice',

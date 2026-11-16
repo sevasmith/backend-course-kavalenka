@@ -107,15 +107,29 @@ export class RbacAuditLogger {
    * An access check said no (403). Covers admin routes too: there the
    * permission is `rbac@manage`.
    */
-  accessDenied(event: {
-    actorUserId: string;
-    permission: string;
-    action: string;
-    operation: string;
-    requestId?: string;
-  }): void {
+  accessDenied(event: RbacAccessCheckEvent): void {
     this.logger.warn(
       formatAuditEvent('rbac.access.denied', { ...event, result: 403 }),
     );
   }
+
+  /**
+   * An access check could not run because the policy is unavailable (503).
+   * The cause is logged by `RbacPolicySnapshotService`; this line records
+   * who was blocked from doing what.
+   */
+  accessUnavailable(event: RbacAccessCheckEvent): void {
+    this.logger.warn(
+      formatAuditEvent('rbac.access.unavailable', { ...event, result: 503 }),
+    );
+  }
+}
+
+/** One access check by the guard: who asked for what, on which route. */
+export interface RbacAccessCheckEvent {
+  actorUserId: string;
+  permission: string;
+  action: string;
+  operation: string;
+  requestId?: string;
 }

@@ -11,8 +11,9 @@ import { Reflector } from '@nestjs/core';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
 import { getRouteAccess } from './rbac.decorators';
-import { RbacAuditLogger } from './rbac-audit.logger';
+import { RbacAccessCheckEvent, RbacAuditLogger } from './rbac-audit.logger';
 import { RbacAuthorizationService } from './rbac-authorization.service';
+import { RbacPolicyUnavailableError } from './rbac-policy-snapshot.service';
 
 /**
  * What the guard needs from the request. Stub until 1.2 Authentication:
@@ -33,8 +34,8 @@ export interface AuthenticatedRequest {
  * those statuses, see `AllExceptionsFilter`) and 503
  * `authorization_unavailable`. The 403 is the same for every denial: it
  * never names the missing permission or the user's roles.
- * `RbacPolicyUnavailableError` from `authorize` is not caught here on
- * purpose: it is already a 503, and must not become a 403.
+ * `RbacPolicyUnavailableError` from `authorize` is only logged and rethrown
+ * unchanged: it is already a 503, and must not become a 403.
  */
 @Injectable()
 export class RbacGuard implements CanActivate {
@@ -82,20 +83,32 @@ export class RbacGuard implements CanActivate {
           throw new UnauthorizedException();
         }
 
-        const allowed = await this.authorizationService.authorize(
-          userId,
-          access.permission,
-          access.action,
-        );
+        const auditEvent: RbacAccessCheckEvent = {
+          actorUserId: userId,
+          permission: access.permission,
+          action: access.action,
+          operation: `${context.getClass().name}.${context.getHandler().name}`,
+          requestId: request.id,
+        };
+
+        let allowed: boolean;
+        try {
+          allowed = await this.authorizationService.authorize(
+            userId,
+            access.permission,
+            access.action,
+          );
+        } catch (error) {
+          // Logged, then rethrown unchanged: it stays a 503, never a 403.
+          if (error instanceof RbacPolicyUnavailableError) {
+            this.audit.accessUnavailable(auditEvent);
+          }
+          throw error;
+        }
+
         if (!allowed) {
           // Logged here, not in the response: the 403 itself stays neutral.
-          this.audit.accessDenied({
-            actorUserId: userId,
-            permission: access.permission,
-            action: access.action,
-            operation: `${context.getClass().name}.${context.getHandler().name}`,
-            requestId: request.id,
-          });
+          this.audit.accessDenied(auditEvent);
           throw new ForbiddenException();
         }
         return true;

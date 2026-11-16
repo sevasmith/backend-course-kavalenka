@@ -48,14 +48,16 @@ describe('RbacGuard', () => {
   let guard: RbacGuard;
   let authorize: jest.Mock;
   let accessDenied: jest.Mock;
+  let accessUnavailable: jest.Mock;
 
   beforeEach(() => {
     authorize = jest.fn();
     accessDenied = jest.fn();
+    accessUnavailable = jest.fn();
     guard = new RbacGuard(
       new Reflector(),
       { authorize } as unknown as RbacAuthorizationService,
-      { accessDenied } as unknown as RbacAuditLogger,
+      { accessDenied, accessUnavailable } as unknown as RbacAuditLogger,
     );
   });
 
@@ -119,14 +121,37 @@ describe('RbacGuard', () => {
     expect(authorize).not.toHaveBeenCalled();
   });
 
-  it('passes on the unavailable policy error instead of a 403', async () => {
-    authorize.mockRejectedValue(new RbacPolicyUnavailableError());
+  it('logs and passes on the unavailable policy error instead of a 403', async () => {
+    const error = new RbacPolicyUnavailableError();
+    authorize.mockRejectedValue(error);
+
+    await expect(
+      guard.canActivate(
+        contextFor(TestController, 'protected', {
+          user: { id: 'alice' },
+          id: 'req-2',
+        }),
+      ),
+    ).rejects.toBe(error);
+    expect(accessUnavailable).toHaveBeenCalledWith({
+      actorUserId: 'alice',
+      permission: 'users',
+      action: 'read',
+      operation: 'TestController.protected',
+      requestId: 'req-2',
+    });
+    expect(accessDenied).not.toHaveBeenCalled();
+  });
+
+  it('rethrows other errors from the check without an audit line', async () => {
+    authorize.mockRejectedValue(new Error('bug'));
 
     await expect(
       guard.canActivate(
         contextFor(TestController, 'protected', { user: { id: 'alice' } }),
       ),
-    ).rejects.toBeInstanceOf(RbacPolicyUnavailableError);
+    ).rejects.toThrow('bug');
+    expect(accessUnavailable).not.toHaveBeenCalled();
   });
 
   it.each(['undeclared', 'ambiguous'])(
