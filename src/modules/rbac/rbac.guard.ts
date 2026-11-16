@@ -11,6 +11,7 @@ import { Reflector } from '@nestjs/core';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
 import { getRouteAccess } from './rbac.decorators';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacAuthorizationService } from './rbac-authorization.service';
 
 /**
@@ -19,6 +20,8 @@ import { RbacAuthorizationService } from './rbac-authorization.service';
  */
 export interface AuthenticatedRequest {
   user?: { id: string };
+  /** Fastify's per-request id, used to find a request in the logs. */
+  id?: string;
 }
 
 /**
@@ -40,6 +43,7 @@ export class RbacGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly authorizationService: RbacAuthorizationService,
+    private readonly audit: RbacAuditLogger,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -84,6 +88,14 @@ export class RbacGuard implements CanActivate {
           access.action,
         );
         if (!allowed) {
+          // Logged here, not in the response: the 403 itself stays neutral.
+          this.audit.accessDenied({
+            actorUserId: userId,
+            permission: access.permission,
+            action: access.action,
+            operation: `${context.getClass().name}.${context.getHandler().name}`,
+            requestId: request.id,
+          });
           throw new ForbiddenException();
         }
         return true;

@@ -8,6 +8,7 @@ import {
   UserRolesBodyDto,
   UserRolesResponse,
 } from './dto/user-roles.dto';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 import { Role } from './role.entity';
 import { UserRole } from './user-role.entity';
@@ -23,6 +24,7 @@ import { UserRole } from './user-role.entity';
 export class RbacUserRolesService {
   constructor(
     private readonly policyChange: RbacPolicyChangeService,
+    private readonly audit: RbacAuditLogger,
     @InjectRepository(UserRole)
     private readonly userRolesRepository: Repository<UserRole>,
     @InjectRepository(Role)
@@ -45,10 +47,11 @@ export class RbacUserRolesService {
    * @throws 404 if the user or any of the roles doesn't exist.
    */
   async replace(
+    actorUserId: string,
     userId: string,
     dto: UserRolesBodyDto,
   ): Promise<UserRolesResponse> {
-    await this.policyChange.apply(async () => {
+    const { version } = await this.policyChange.apply(async () => {
       await this.assertUserExists(userId);
       await this.assertRolesExist(dto.roleIds);
 
@@ -58,6 +61,14 @@ export class RbacUserRolesService {
           dto.roleIds.map((roleId) => ({ userId, roleId })),
         );
       }
+    });
+    // The role ids are not logged: the entity is the user's role set.
+    this.audit.adminChange({
+      actorUserId,
+      operation: 'replace',
+      entityType: 'user_roles',
+      entityId: userId,
+      policyVersion: version,
     });
     return toUserRolesResponse(userId, dto.roleIds);
   }

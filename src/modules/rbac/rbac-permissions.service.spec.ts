@@ -8,7 +8,10 @@ import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
 import { RbacPermissionsService } from './rbac-permissions.service';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
+
+const ACTOR_ID = '0b9d6c1e-2f3a-4b5c-8d7e-6f5a4b3c2d1e';
 
 const pgError = (code: string) =>
   new QueryFailedError(
@@ -55,6 +58,7 @@ describe('RbacPermissionsService', () => {
   let grants: { existsBy: jest.Mock };
   let grantActions: { existsBy: jest.Mock };
   let policyChange: { apply: jest.Mock };
+  let audit: { adminChange: jest.Mock };
 
   beforeEach(async () => {
     permissions = {
@@ -93,10 +97,12 @@ describe('RbacPermissionsService', () => {
       })),
     };
 
+    audit = { adminChange: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RbacPermissionsService,
         { provide: RbacPolicyChangeService, useValue: policyChange },
+        { provide: RbacAuditLogger, useValue: audit },
         { provide: getRepositoryToken(Permission), useValue: permissions },
         { provide: getRepositoryToken(PermissionAction), useValue: actions },
         { provide: getRepositoryToken(Grant), useValue: grants },
@@ -130,7 +136,7 @@ describe('RbacPermissionsService', () => {
 
   describe('create', () => {
     it('saves the permission and its actions in one policy change', async () => {
-      const result = await service.create({
+      const result = await service.create(ACTOR_ID, {
         name: 'reports',
         actions: ['read', 'export'],
       });
@@ -152,14 +158,14 @@ describe('RbacPermissionsService', () => {
       permissions.save.mockRejectedValue(pgError('23505'));
 
       await expect(
-        service.create({ name: 'reports', actions: ['read'] }),
+        service.create(ACTOR_ID, { name: 'reports', actions: ['read'] }),
       ).rejects.toThrow(ConflictException);
     });
   });
 
   describe('replace', () => {
     it('keeps, removes and adds actions, and replaces the fields', async () => {
-      await service.replace(PERMISSION_ID, {
+      await service.replace(ACTOR_ID, PERMISSION_ID, {
         name: 'reports',
         description: 'Reports',
         actions: ['read', 'print'],
@@ -179,7 +185,7 @@ describe('RbacPermissionsService', () => {
     });
 
     it('does not touch actions when the set is the same', async () => {
-      await service.replace(PERMISSION_ID, {
+      await service.replace(ACTOR_ID, PERMISSION_ID, {
         name: 'reports',
         actions: ['export', 'read'],
       });
@@ -193,7 +199,10 @@ describe('RbacPermissionsService', () => {
       grantActions.existsBy.mockResolvedValue(true);
 
       await expect(
-        service.replace(PERMISSION_ID, { name: 'reports', actions: ['read'] }),
+        service.replace(ACTOR_ID, PERMISSION_ID, {
+          name: 'reports',
+          actions: ['read'],
+        }),
       ).rejects.toThrow(ConflictException);
       expect(actions.delete).not.toHaveBeenCalled();
     });
@@ -202,7 +211,10 @@ describe('RbacPermissionsService', () => {
       actions.delete.mockRejectedValue(pgError('23503'));
 
       await expect(
-        service.replace(PERMISSION_ID, { name: 'reports', actions: ['read'] }),
+        service.replace(ACTOR_ID, PERMISSION_ID, {
+          name: 'reports',
+          actions: ['read'],
+        }),
       ).rejects.toThrow(ConflictException);
     });
 
@@ -210,7 +222,10 @@ describe('RbacPermissionsService', () => {
       permissions.findOneBy.mockResolvedValue(null);
 
       await expect(
-        service.replace(PERMISSION_ID, { name: 'reports', actions: ['read'] }),
+        service.replace(ACTOR_ID, PERMISSION_ID, {
+          name: 'reports',
+          actions: ['read'],
+        }),
       ).rejects.toThrow(NotFoundException);
       expect(actions.findBy).not.toHaveBeenCalled();
     });
@@ -219,14 +234,17 @@ describe('RbacPermissionsService', () => {
       permissions.update.mockRejectedValue(pgError('23505'));
 
       await expect(
-        service.replace(PERMISSION_ID, { name: 'users', actions: ['read'] }),
+        service.replace(ACTOR_ID, PERMISSION_ID, {
+          name: 'users',
+          actions: ['read'],
+        }),
       ).rejects.toThrow(ConflictException);
     });
   });
 
   describe('delete', () => {
     it('deletes a permission without grants', async () => {
-      await service.delete(PERMISSION_ID);
+      await service.delete(ACTOR_ID, PERMISSION_ID);
 
       expect(policyChange.apply).toHaveBeenCalledTimes(1);
       expect(permissions.delete).toHaveBeenCalledWith(PERMISSION_ID);
@@ -235,7 +253,7 @@ describe('RbacPermissionsService', () => {
     it('returns 404 for a missing permission', async () => {
       permissions.findOneBy.mockResolvedValue(null);
 
-      await expect(service.delete(PERMISSION_ID)).rejects.toThrow(
+      await expect(service.delete(ACTOR_ID, PERMISSION_ID)).rejects.toThrow(
         NotFoundException,
       );
     });
@@ -243,7 +261,7 @@ describe('RbacPermissionsService', () => {
     it('returns 409 for a permission with grants', async () => {
       grants.existsBy.mockResolvedValue(true);
 
-      await expect(service.delete(PERMISSION_ID)).rejects.toThrow(
+      await expect(service.delete(ACTOR_ID, PERMISSION_ID)).rejects.toThrow(
         ConflictException,
       );
       expect(permissions.delete).not.toHaveBeenCalled();

@@ -19,6 +19,7 @@ import { Grant } from './grant.entity';
 import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 
 const ACTION_IN_USE = 'An action being removed is part of a grant';
@@ -33,6 +34,7 @@ const ACTION_IN_USE = 'An action being removed is part of a grant';
 export class RbacPermissionsService {
   constructor(
     private readonly policyChange: RbacPolicyChangeService,
+    private readonly audit: RbacAuditLogger,
     @InjectRepository(Permission)
     private readonly permissionsRepository: Repository<Permission>,
     @InjectRepository(PermissionAction)
@@ -64,9 +66,12 @@ export class RbacPermissionsService {
     );
   }
 
-  create(dto: PermissionBodyDto): Promise<PermissionResponse> {
+  create(
+    actorUserId: string,
+    dto: PermissionBodyDto,
+  ): Promise<PermissionResponse> {
     return this.withNameConflict(async () => {
-      const { result } = await this.policyChange.apply(async () => {
+      const { result, version } = await this.policyChange.apply(async () => {
         const permission = await this.permissionsRepository.save(
           this.permissionsRepository.create({
             name: dto.name,
@@ -77,6 +82,13 @@ export class RbacPermissionsService {
           dto.actions.map((name) => ({ permissionId: permission.id, name })),
         );
         return permission;
+      });
+      this.audit.adminChange({
+        actorUserId,
+        operation: 'create',
+        entityType: 'permission',
+        entityId: result.id,
+        policyVersion: version,
       });
       return toPermissionResponse(result, dto.actions);
     });
@@ -91,12 +103,13 @@ export class RbacPermissionsService {
    *   simply cover what is left, and also cover the added actions.
    */
   async replace(
+    actorUserId: string,
     permissionId: string,
     dto: PermissionBodyDto,
   ): Promise<PermissionResponse> {
     try {
       return await this.withNameConflict(async () => {
-        const { result } = await this.policyChange.apply(async () => {
+        const { result, version } = await this.policyChange.apply(async () => {
           await this.findOrFail(permissionId);
           await this.replaceActions(permissionId, dto.actions);
 
@@ -106,6 +119,13 @@ export class RbacPermissionsService {
             description: dto.description ?? null,
           });
           return this.findOrFail(permissionId);
+        });
+        this.audit.adminChange({
+          actorUserId,
+          operation: 'replace',
+          entityType: 'permission',
+          entityId: permissionId,
+          policyVersion: version,
         });
         return toPermissionResponse(result, dto.actions);
       });
@@ -123,8 +143,8 @@ export class RbacPermissionsService {
    * permissions in the DB, so this check is what keeps roles from losing
    * rights silently. Its actions are deleted by the cascade.
    */
-  async delete(permissionId: string): Promise<void> {
-    await this.policyChange.apply(async () => {
+  async delete(actorUserId: string, permissionId: string): Promise<void> {
+    const { version } = await this.policyChange.apply(async () => {
       await this.findOrFail(permissionId);
 
       if (await this.grantsRepository.existsBy({ permissionId })) {
@@ -132,6 +152,13 @@ export class RbacPermissionsService {
       }
 
       await this.permissionsRepository.delete(permissionId);
+    });
+    this.audit.adminChange({
+      actorUserId,
+      operation: 'delete',
+      entityType: 'permission',
+      entityId: permissionId,
+      policyVersion: version,
     });
   }
 

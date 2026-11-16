@@ -12,6 +12,7 @@ import {
 } from '@/core/database/pg-errors';
 import { RoleBodyDto, RoleResponse, toRoleResponse } from './dto/role.dto';
 import { Grant } from './grant.entity';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 import { Role } from './role.entity';
 import { UserRole } from './user-role.entity';
@@ -22,11 +23,14 @@ import { UserRole } from './user-role.entity';
  *
  * The 404/409 exceptions are thrown inside `apply`, so they also roll back
  * the transaction and the version is not bumped for a rejected change.
+ * A committed change is written to the audit log after `apply` returns;
+ * rejections are logged by `RbacAdminAuditInterceptor`.
  */
 @Injectable()
 export class RbacRolesService {
   constructor(
     private readonly policyChange: RbacPolicyChangeService,
+    private readonly audit: RbacAuditLogger,
     @InjectRepository(Role)
     private readonly rolesRepository: Repository<Role>,
     @InjectRepository(Grant)
@@ -40,9 +44,9 @@ export class RbacRolesService {
     return roles.map(toRoleResponse);
   }
 
-  create(dto: RoleBodyDto): Promise<RoleResponse> {
+  create(actorUserId: string, dto: RoleBodyDto): Promise<RoleResponse> {
     return this.withNameConflict(async () => {
-      const { result } = await this.policyChange.apply(() =>
+      const { result, version } = await this.policyChange.apply(() =>
         this.rolesRepository.save(
           this.rolesRepository.create({
             name: dto.name,
@@ -50,18 +54,36 @@ export class RbacRolesService {
           }),
         ),
       );
+      this.audit.adminChange({
+        actorUserId,
+        operation: 'create',
+        entityType: 'role',
+        entityId: result.id,
+        policyVersion: version,
+      });
       return toRoleResponse(result);
     });
   }
 
   /** Full replacement: a missing `description` becomes `null`. */
-  replace(roleId: string, dto: RoleBodyDto): Promise<RoleResponse> {
+  replace(
+    actorUserId: string,
+    roleId: string,
+    dto: RoleBodyDto,
+  ): Promise<RoleResponse> {
     return this.withNameConflict(async () => {
-      const { result } = await this.policyChange.apply(async () => {
+      const { result, version } = await this.policyChange.apply(async () => {
         const role = await this.findOrFail(roleId);
         role.name = dto.name;
         role.description = dto.description ?? null;
         return this.rolesRepository.save(role);
+      });
+      this.audit.adminChange({
+        actorUserId,
+        operation: 'replace',
+        entityType: 'role',
+        entityId: roleId,
+        policyVersion: version,
       });
       return toRoleResponse(result);
     });
@@ -71,9 +93,10 @@ export class RbacRolesService {
    * Only an unused role can be deleted. The check comes first, so the DB
    * cascade from roles to grants never fires through the API.
    */
-  async delete(roleId: string): Promise<void> {
+  async delete(actorUserId: string, roleId: string): Promise<void> {
+    let version: number;
     try {
-      await this.policyChange.apply(async () => {
+      ({ version } = await this.policyChange.apply(async () => {
         await this.findOrFail(roleId);
 
         const [hasGrants, hasUsers] = await Promise.all([
@@ -85,7 +108,7 @@ export class RbacRolesService {
         }
 
         await this.rolesRepository.delete(roleId);
-      });
+      }));
     } catch (error) {
       // A user got the role between the check and the delete (e.g. a
       // registration, which doesn't take the admin lock): `user_roles`
@@ -95,6 +118,13 @@ export class RbacRolesService {
       }
       throw error;
     }
+    this.audit.adminChange({
+      actorUserId,
+      operation: 'delete',
+      entityType: 'role',
+      entityId: roleId,
+      policyVersion: version,
+    });
   }
 
   private async findOrFail(roleId: string): Promise<Role> {

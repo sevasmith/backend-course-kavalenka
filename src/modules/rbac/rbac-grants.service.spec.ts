@@ -12,8 +12,11 @@ import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
 import { RbacGrantsService } from './rbac-grants.service';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 import { Role } from './role.entity';
+
+const ACTOR_ID = '0b9d6c1e-2f3a-4b5c-8d7e-6f5a4b3c2d1e';
 
 const pgError = (code: string) =>
   new QueryFailedError(
@@ -59,6 +62,7 @@ describe('RbacGrantsService', () => {
   let permissions: { existsBy: jest.Mock };
   let actions: { find: jest.Mock; findBy: jest.Mock };
   let policyChange: { apply: jest.Mock };
+  let audit: { adminChange: jest.Mock };
 
   beforeEach(async () => {
     grants = {
@@ -98,10 +102,12 @@ describe('RbacGrantsService', () => {
       })),
     };
 
+    audit = { adminChange: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RbacGrantsService,
         { provide: RbacPolicyChangeService, useValue: policyChange },
+        { provide: RbacAuditLogger, useValue: audit },
         { provide: getRepositoryToken(Grant), useValue: grants },
         { provide: getRepositoryToken(GrantAction), useValue: grantActions },
         { provide: getRepositoryToken(Role), useValue: roles },
@@ -145,7 +151,7 @@ describe('RbacGrantsService', () => {
 
   describe('create', () => {
     it('stores an explicit grant with one row per action, in one policy change', async () => {
-      const result = await service.create(body(['read', 'list']));
+      const result = await service.create(ACTOR_ID, body(['read', 'list']));
 
       expect(policyChange.apply).toHaveBeenCalledTimes(1);
       expect(actions.findBy).toHaveBeenCalledWith({
@@ -168,7 +174,7 @@ describe('RbacGrantsService', () => {
     it.each([[undefined], [[]]])(
       'treats actions %p as all actions, with no action rows',
       async (actionNames) => {
-        const result = await service.create(body(actionNames));
+        const result = await service.create(ACTOR_ID, body(actionNames));
 
         expect(grants.create).toHaveBeenCalledWith(
           expect.objectContaining({ allActions: true }),
@@ -182,37 +188,43 @@ describe('RbacGrantsService', () => {
     it('throws 404 when the role does not exist', async () => {
       roles.existsBy.mockResolvedValue(false);
 
-      await expect(service.create(body())).rejects.toThrow(NotFoundException);
+      await expect(service.create(ACTOR_ID, body())).rejects.toThrow(
+        NotFoundException,
+      );
       expect(grants.save).not.toHaveBeenCalled();
     });
 
     it('throws 404 when the permission does not exist', async () => {
       permissions.existsBy.mockResolvedValue(false);
 
-      await expect(service.create(body())).rejects.toThrow(NotFoundException);
+      await expect(service.create(ACTOR_ID, body())).rejects.toThrow(
+        NotFoundException,
+      );
       expect(grants.save).not.toHaveBeenCalled();
     });
 
     it('throws 400 when an action does not belong to the permission', async () => {
       actions.findBy.mockResolvedValue([action('act-read', 'read')]);
 
-      await expect(service.create(body(['read', 'export']))).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.create(ACTOR_ID, body(['read', 'export'])),
+      ).rejects.toThrow(BadRequestException);
       expect(grants.save).not.toHaveBeenCalled();
     });
 
     it('maps a duplicate role + permission pair to 409', async () => {
       grants.save.mockRejectedValue(pgError('23505'));
 
-      await expect(service.create(body())).rejects.toThrow(ConflictException);
+      await expect(service.create(ACTOR_ID, body())).rejects.toThrow(
+        ConflictException,
+      );
     });
 
     it('lets the rbac@manage invariant error through', async () => {
       const invariant = new ConflictException('no admin left');
       policyChange.apply.mockRejectedValue(invariant);
 
-      await expect(service.create(body())).rejects.toBe(invariant);
+      await expect(service.create(ACTOR_ID, body())).rejects.toBe(invariant);
     });
   });
 
@@ -220,7 +232,11 @@ describe('RbacGrantsService', () => {
     it('replaces the action rows and the fields', async () => {
       grants.findOneBy.mockResolvedValue(grant({ allActions: false }));
 
-      const result = await service.replace(GRANT_ID, body(['read', 'list']));
+      const result = await service.replace(
+        ACTOR_ID,
+        GRANT_ID,
+        body(['read', 'list']),
+      );
 
       expect(grantActions.delete).toHaveBeenCalledWith({ grantId: GRANT_ID });
       expect(grants.update).toHaveBeenCalledWith(GRANT_ID, {
@@ -238,7 +254,7 @@ describe('RbacGrantsService', () => {
     it('switches to all actions when actions are missing', async () => {
       grants.findOneBy.mockResolvedValue(grant({ allActions: true }));
 
-      const result = await service.replace(GRANT_ID, body());
+      const result = await service.replace(ACTOR_ID, GRANT_ID, body());
 
       expect(grantActions.delete).toHaveBeenCalledWith({ grantId: GRANT_ID });
       expect(grants.update).toHaveBeenCalledWith(
@@ -252,7 +268,7 @@ describe('RbacGrantsService', () => {
     it('throws 404 when the grant does not exist', async () => {
       grants.findOneBy.mockResolvedValue(null);
 
-      await expect(service.replace(GRANT_ID, body())).rejects.toThrow(
+      await expect(service.replace(ACTOR_ID, GRANT_ID, body())).rejects.toThrow(
         NotFoundException,
       );
       expect(grants.update).not.toHaveBeenCalled();
@@ -261,7 +277,7 @@ describe('RbacGrantsService', () => {
     it('maps a pair already used by another grant to 409', async () => {
       grants.update.mockRejectedValue(pgError('23505'));
 
-      await expect(service.replace(GRANT_ID, body())).rejects.toThrow(
+      await expect(service.replace(ACTOR_ID, GRANT_ID, body())).rejects.toThrow(
         ConflictException,
       );
     });
@@ -269,7 +285,7 @@ describe('RbacGrantsService', () => {
 
   describe('delete', () => {
     it('deletes an existing grant in a policy change', async () => {
-      await service.delete(GRANT_ID);
+      await service.delete(ACTOR_ID, GRANT_ID);
 
       expect(policyChange.apply).toHaveBeenCalledTimes(1);
       expect(grants.delete).toHaveBeenCalledWith(GRANT_ID);
@@ -278,7 +294,9 @@ describe('RbacGrantsService', () => {
     it('throws 404 when the grant does not exist', async () => {
       grants.findOneBy.mockResolvedValue(null);
 
-      await expect(service.delete(GRANT_ID)).rejects.toThrow(NotFoundException);
+      await expect(service.delete(ACTOR_ID, GRANT_ID)).rejects.toThrow(
+        NotFoundException,
+      );
       expect(grants.delete).not.toHaveBeenCalled();
     });
   });

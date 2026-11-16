@@ -8,6 +8,7 @@ import { Reflector } from '@nestjs/core';
 
 import { Public, RequirePermission } from './rbac.decorators';
 import { AuthenticatedRequest, RbacGuard } from './rbac.guard';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacAuthorizationService } from './rbac-authorization.service';
 import { RbacPolicyUnavailableError } from './rbac-policy-snapshot.service';
 
@@ -46,12 +47,35 @@ function contextFor(
 describe('RbacGuard', () => {
   let guard: RbacGuard;
   let authorize: jest.Mock;
+  let accessDenied: jest.Mock;
 
   beforeEach(() => {
     authorize = jest.fn();
-    guard = new RbacGuard(new Reflector(), {
-      authorize,
-    } as unknown as RbacAuthorizationService);
+    accessDenied = jest.fn();
+    guard = new RbacGuard(
+      new Reflector(),
+      { authorize } as unknown as RbacAuthorizationService,
+      { accessDenied } as unknown as RbacAuditLogger,
+    );
+  });
+
+  it('logs a denial with ids only, and nothing when allowed', async () => {
+    authorize.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const request = { user: { id: 'alice' }, id: 'req-1' };
+
+    await expect(
+      guard.canActivate(contextFor(TestController, 'protected', request)),
+    ).rejects.toThrow(ForbiddenException);
+    expect(accessDenied).toHaveBeenCalledWith({
+      actorUserId: 'alice',
+      permission: 'users',
+      action: 'read',
+      operation: 'TestController.protected',
+      requestId: 'req-1',
+    });
+
+    await guard.canActivate(contextFor(TestController, 'protected', request));
+    expect(accessDenied).toHaveBeenCalledTimes(1);
   });
 
   it('lets public routes through without a user or a check', async () => {

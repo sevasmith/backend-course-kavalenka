@@ -4,6 +4,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { In } from 'typeorm';
 
 import { User } from '@/modules/users/user.entity';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import {
   RbacManageInvariantError,
   RbacPolicyChangeService,
@@ -11,6 +12,8 @@ import {
 import { RbacUserRolesService } from './rbac-user-roles.service';
 import { Role } from './role.entity';
 import { UserRole } from './user-role.entity';
+
+const ACTOR_ID = '0b9d6c1e-2f3a-4b5c-8d7e-6f5a4b3c2d1e';
 
 const USER_ID = '9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
 const ROLE_A = '0b6f1c2a-3d4e-4f5a-8b6c-7d8e9f0a1b2c';
@@ -22,6 +25,7 @@ describe('RbacUserRolesService', () => {
   let roles: { countBy: jest.Mock };
   let users: { existsBy: jest.Mock };
   let policyChange: { apply: jest.Mock };
+  let audit: { adminChange: jest.Mock };
 
   beforeEach(async () => {
     userRoles = {
@@ -39,10 +43,12 @@ describe('RbacUserRolesService', () => {
       })),
     };
 
+    audit = { adminChange: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RbacUserRolesService,
         { provide: RbacPolicyChangeService, useValue: policyChange },
+        { provide: RbacAuditLogger, useValue: audit },
         { provide: getRepositoryToken(UserRole), useValue: userRoles },
         { provide: getRepositoryToken(Role), useValue: roles },
         { provide: getRepositoryToken(User), useValue: users },
@@ -76,7 +82,7 @@ describe('RbacUserRolesService', () => {
 
   describe('replace', () => {
     it('replaces all links in one policy change', async () => {
-      const result = await service.replace(USER_ID, {
+      const result = await service.replace(ACTOR_ID, USER_ID, {
         roleIds: [ROLE_B, ROLE_A],
       });
 
@@ -91,7 +97,7 @@ describe('RbacUserRolesService', () => {
     });
 
     it('removes all roles for an empty list', async () => {
-      const result = await service.replace(USER_ID, { roleIds: [] });
+      const result = await service.replace(ACTOR_ID, USER_ID, { roleIds: [] });
 
       expect(roles.countBy).not.toHaveBeenCalled();
       expect(userRoles.delete).toHaveBeenCalledWith({ userId: USER_ID });
@@ -103,7 +109,7 @@ describe('RbacUserRolesService', () => {
       users.existsBy.mockResolvedValue(false);
 
       await expect(
-        service.replace(USER_ID, { roleIds: [ROLE_A] }),
+        service.replace(ACTOR_ID, USER_ID, { roleIds: [ROLE_A] }),
       ).rejects.toThrow(NotFoundException);
       expect(userRoles.delete).not.toHaveBeenCalled();
     });
@@ -112,7 +118,7 @@ describe('RbacUserRolesService', () => {
       roles.countBy.mockResolvedValue(1);
 
       await expect(
-        service.replace(USER_ID, { roleIds: [ROLE_A, ROLE_B] }),
+        service.replace(ACTOR_ID, USER_ID, { roleIds: [ROLE_A, ROLE_B] }),
       ).rejects.toThrow(NotFoundException);
       expect(userRoles.delete).not.toHaveBeenCalled();
     });
@@ -121,9 +127,9 @@ describe('RbacUserRolesService', () => {
       const invariant = new RbacManageInvariantError();
       policyChange.apply.mockRejectedValue(invariant);
 
-      await expect(service.replace(USER_ID, { roleIds: [] })).rejects.toBe(
-        invariant,
-      );
+      await expect(
+        service.replace(ACTOR_ID, USER_ID, { roleIds: [] }),
+      ).rejects.toBe(invariant);
     });
   });
 });

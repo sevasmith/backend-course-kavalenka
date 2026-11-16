@@ -4,10 +4,13 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { QueryFailedError } from 'typeorm';
 
 import { Grant } from './grant.entity';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 import { RbacRolesService } from './rbac-roles.service';
 import { Role } from './role.entity';
 import { UserRole } from './user-role.entity';
+
+const ACTOR_ID = '0b9d6c1e-2f3a-4b5c-8d7e-6f5a4b3c2d1e';
 
 const pgError = (code: string) =>
   new QueryFailedError(
@@ -40,6 +43,7 @@ describe('RbacRolesService', () => {
   let grants: { existsBy: jest.Mock };
   let userRoles: { existsBy: jest.Mock };
   let policyChange: { apply: jest.Mock };
+  let audit: { adminChange: jest.Mock };
 
   beforeEach(async () => {
     roles = {
@@ -61,10 +65,12 @@ describe('RbacRolesService', () => {
       })),
     };
 
+    audit = { adminChange: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RbacRolesService,
         { provide: RbacPolicyChangeService, useValue: policyChange },
+        { provide: RbacAuditLogger, useValue: audit },
         { provide: getRepositoryToken(Role), useValue: roles },
         { provide: getRepositoryToken(Grant), useValue: grants },
         { provide: getRepositoryToken(UserRole), useValue: userRoles },
@@ -97,7 +103,8 @@ describe('RbacRolesService', () => {
 
   describe('create', () => {
     it('saves the role through the policy change helper', async () => {
-      const result = await service.create({ name: 'editor' });
+      roles.save.mockResolvedValueOnce(role({ name: 'editor' }));
+      const result = await service.create(ACTOR_ID, { name: 'editor' });
 
       expect(policyChange.apply).toHaveBeenCalledTimes(1);
       expect(roles.create).toHaveBeenCalledWith({
@@ -105,21 +112,30 @@ describe('RbacRolesService', () => {
         description: null,
       });
       expect(result.name).toBe('editor');
+      expect(audit.adminChange).toHaveBeenCalledWith({
+        actorUserId: ACTOR_ID,
+        operation: 'create',
+        entityType: 'role',
+        entityId: ROLE_ID,
+        policyVersion: 2,
+      });
     });
 
     it('turns a duplicate name into 409', async () => {
       roles.save.mockRejectedValue(pgError('23505'));
 
-      await expect(service.create({ name: 'editor' })).rejects.toThrow(
-        ConflictException,
-      );
+      await expect(
+        service.create(ACTOR_ID, { name: 'editor' }),
+      ).rejects.toThrow(ConflictException);
     });
 
     it('rethrows other errors unchanged', async () => {
       const error = new Error('connection lost');
       roles.save.mockRejectedValue(error);
 
-      await expect(service.create({ name: 'editor' })).rejects.toBe(error);
+      await expect(service.create(ACTOR_ID, { name: 'editor' })).rejects.toBe(
+        error,
+      );
     });
   });
 
@@ -127,7 +143,9 @@ describe('RbacRolesService', () => {
     it('replaces name and description, clearing a missing description', async () => {
       roles.findOneBy.mockResolvedValue(role({ description: 'old' }));
 
-      const result = await service.replace(ROLE_ID, { name: 'writer' });
+      const result = await service.replace(ACTOR_ID, ROLE_ID, {
+        name: 'writer',
+      });
 
       expect(policyChange.apply).toHaveBeenCalledTimes(1);
       expect(roles.save).toHaveBeenCalledWith(
@@ -140,7 +158,7 @@ describe('RbacRolesService', () => {
       roles.findOneBy.mockResolvedValue(null);
 
       await expect(
-        service.replace(ROLE_ID, { name: 'writer' }),
+        service.replace(ACTOR_ID, ROLE_ID, { name: 'writer' }),
       ).rejects.toThrow(NotFoundException);
       expect(roles.save).not.toHaveBeenCalled();
     });
@@ -148,45 +166,58 @@ describe('RbacRolesService', () => {
     it('turns a duplicate name into 409', async () => {
       roles.save.mockRejectedValue(pgError('23505'));
 
-      await expect(service.replace(ROLE_ID, { name: 'admin' })).rejects.toThrow(
-        ConflictException,
-      );
+      await expect(
+        service.replace(ACTOR_ID, ROLE_ID, { name: 'admin' }),
+      ).rejects.toThrow(ConflictException);
     });
   });
 
   describe('delete', () => {
     it('deletes an unused role through the policy change helper', async () => {
-      await service.delete(ROLE_ID);
+      await service.delete(ACTOR_ID, ROLE_ID);
 
       expect(policyChange.apply).toHaveBeenCalledTimes(1);
       expect(roles.delete).toHaveBeenCalledWith(ROLE_ID);
+      expect(audit.adminChange).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: 'delete', entityId: ROLE_ID }),
+      );
     });
 
     it('returns 404 for a missing role', async () => {
       roles.findOneBy.mockResolvedValue(null);
 
-      await expect(service.delete(ROLE_ID)).rejects.toThrow(NotFoundException);
+      await expect(service.delete(ACTOR_ID, ROLE_ID)).rejects.toThrow(
+        NotFoundException,
+      );
       expect(roles.delete).not.toHaveBeenCalled();
     });
 
     it('returns 409 for a role with grants', async () => {
       grants.existsBy.mockResolvedValue(true);
 
-      await expect(service.delete(ROLE_ID)).rejects.toThrow(ConflictException);
+      await expect(service.delete(ACTOR_ID, ROLE_ID)).rejects.toThrow(
+        ConflictException,
+      );
       expect(roles.delete).not.toHaveBeenCalled();
     });
 
     it('returns 409 for a role assigned to users', async () => {
       userRoles.existsBy.mockResolvedValue(true);
 
-      await expect(service.delete(ROLE_ID)).rejects.toThrow(ConflictException);
+      await expect(service.delete(ACTOR_ID, ROLE_ID)).rejects.toThrow(
+        ConflictException,
+      );
       expect(roles.delete).not.toHaveBeenCalled();
     });
 
     it('returns 409 when a user got the role during the delete', async () => {
       roles.delete.mockRejectedValue(pgError('23503'));
 
-      await expect(service.delete(ROLE_ID)).rejects.toThrow(ConflictException);
+      await expect(service.delete(ACTOR_ID, ROLE_ID)).rejects.toThrow(
+        ConflictException,
+      );
+      // Rolled back: not a change. The interceptor logs the rejection.
+      expect(audit.adminChange).not.toHaveBeenCalled();
     });
   });
 });

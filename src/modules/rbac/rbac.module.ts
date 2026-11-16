@@ -8,6 +8,8 @@ import { Grant } from './grant.entity';
 import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
+import { RbacAdminAuditInterceptor } from './rbac-admin-audit.interceptor';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacGrantsController } from './rbac-grants.controller';
 import { RbacGrantsService } from './rbac-grants.service';
 import { RbacDefaultRoleService } from './rbac-default-role.service';
@@ -59,6 +61,8 @@ import { UserRole } from './user-role.entity';
     RbacPolicyHealthIndicator,
     RbacAuthorizationService,
     RbacPolicyChangeService,
+    RbacAuditLogger,
+    RbacAdminAuditInterceptor,
     RbacRolesService,
     RbacPermissionsService,
     RbacGrantsService,

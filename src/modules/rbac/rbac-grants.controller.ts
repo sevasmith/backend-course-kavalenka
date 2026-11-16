@@ -9,15 +9,20 @@ import {
   ParseUUIDPipe,
   Post,
   Put,
+  UseInterceptors,
 } from '@nestjs/common';
 
 import { GrantBodyDto, GrantResponse } from './dto/grant.dto';
 import { RbacGrantsService } from './rbac-grants.service';
-import { RequirePermission } from './rbac.decorators';
+import { ActorUserId, RequirePermission } from './rbac.decorators';
+import { RbacAdminAuditInterceptor } from './rbac-admin-audit.interceptor';
+import { AuditTarget } from './rbac-audit.logger';
 
 /** Grant management. Every route needs `rbac@manage`. */
 @Controller('admin/rbac/grants')
 @RequirePermission('rbac', 'manage')
+@AuditTarget('grant', 'grantId')
+@UseInterceptors(RbacAdminAuditInterceptor)
 export class RbacGrantsController {
   constructor(private readonly grantsService: RbacGrantsService) {}
 
@@ -32,8 +37,11 @@ export class RbacGrantsController {
    * already granted.
    */
   @Post()
-  create(@Body() dto: GrantBodyDto): Promise<GrantResponse> {
-    return this.grantsService.create(dto);
+  create(
+    @ActorUserId() actorUserId: string,
+    @Body() dto: GrantBodyDto,
+  ): Promise<GrantResponse> {
+    return this.grantsService.create(actorUserId, dto);
   }
 
   /**
@@ -43,16 +51,20 @@ export class RbacGrantsController {
    */
   @Put(':grantId')
   replace(
+    @ActorUserId() actorUserId: string,
     @Param('grantId', ParseUUIDPipe) grantId: string,
     @Body() dto: GrantBodyDto,
   ): Promise<GrantResponse> {
-    return this.grantsService.replace(grantId, dto);
+    return this.grantsService.replace(actorUserId, grantId, dto);
   }
 
   /** 204; 404 if missing; 409 if no user would keep `rbac@manage`. */
   @Delete(':grantId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  delete(@Param('grantId', ParseUUIDPipe) grantId: string): Promise<void> {
-    return this.grantsService.delete(grantId);
+  delete(
+    @ActorUserId() actorUserId: string,
+    @Param('grantId', ParseUUIDPipe) grantId: string,
+  ): Promise<void> {
+    return this.grantsService.delete(actorUserId, grantId);
   }
 }

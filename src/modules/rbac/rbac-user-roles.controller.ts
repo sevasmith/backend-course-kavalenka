@@ -5,15 +5,20 @@ import {
   Param,
   ParseUUIDPipe,
   Put,
+  UseInterceptors,
 } from '@nestjs/common';
 
 import { UserRolesBodyDto, UserRolesResponse } from './dto/user-roles.dto';
 import { RbacUserRolesService } from './rbac-user-roles.service';
-import { RequirePermission } from './rbac.decorators';
+import { ActorUserId, RequirePermission } from './rbac.decorators';
+import { RbacAdminAuditInterceptor } from './rbac-admin-audit.interceptor';
+import { AuditTarget } from './rbac-audit.logger';
 
 /** A user's roles. Every route needs `rbac@manage`. */
 @Controller('admin/rbac/users/:userId/roles')
 @RequirePermission('rbac', 'manage')
+@AuditTarget('user_roles', 'userId')
+@UseInterceptors(RbacAdminAuditInterceptor)
 export class RbacUserRolesController {
   constructor(private readonly userRolesService: RbacUserRolesService) {}
 
@@ -31,9 +36,10 @@ export class RbacUserRolesController {
    */
   @Put()
   replace(
+    @ActorUserId() actorUserId: string,
     @Param('userId', ParseUUIDPipe) userId: string,
     @Body() dto: UserRolesBodyDto,
   ): Promise<UserRolesResponse> {
-    return this.userRolesService.replace(userId, dto);
+    return this.userRolesService.replace(actorUserId, userId, dto);
   }
 }

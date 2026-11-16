@@ -13,6 +13,7 @@ import { Grant } from './grant.entity';
 import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
 import { PermissionAction } from './permission-action.entity';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 import { Role } from './role.entity';
 
@@ -32,6 +33,7 @@ import { Role } from './role.entity';
 export class RbacGrantsService {
   constructor(
     private readonly policyChange: RbacPolicyChangeService,
+    private readonly audit: RbacAuditLogger,
     @InjectRepository(Grant)
     private readonly grantsRepository: Repository<Grant>,
     @InjectRepository(GrantAction)
@@ -64,9 +66,9 @@ export class RbacGrantsService {
     );
   }
 
-  create(dto: GrantBodyDto): Promise<GrantResponse> {
+  create(actorUserId: string, dto: GrantBodyDto): Promise<GrantResponse> {
     return this.withPairConflict(async () => {
-      const { result } = await this.policyChange.apply(async () => {
+      const { result, version } = await this.policyChange.apply(async () => {
         const actionIds = await this.resolveTarget(dto);
 
         const grant = await this.grantsRepository.save(
@@ -79,6 +81,13 @@ export class RbacGrantsService {
         await this.insertActions(grant.id, actionIds);
         return grant;
       });
+      this.audit.adminChange({
+        actorUserId,
+        operation: 'create',
+        entityType: 'grant',
+        entityId: result.id,
+        policyVersion: version,
+      });
       return toGrantResponse(result, dto.actions ?? []);
     });
   }
@@ -87,9 +96,13 @@ export class RbacGrantsService {
    * Full replacement: role, permission and actions. The grant keeps its id;
    * its old action rows are dropped and the new ones inserted.
    */
-  replace(grantId: string, dto: GrantBodyDto): Promise<GrantResponse> {
+  replace(
+    actorUserId: string,
+    grantId: string,
+    dto: GrantBodyDto,
+  ): Promise<GrantResponse> {
     return this.withPairConflict(async () => {
-      const { result } = await this.policyChange.apply(async () => {
+      const { result, version } = await this.policyChange.apply(async () => {
         await this.findOrFail(grantId);
         const actionIds = await this.resolveTarget(dto);
 
@@ -103,15 +116,29 @@ export class RbacGrantsService {
         await this.insertActions(grantId, actionIds);
         return this.findOrFail(grantId);
       });
+      this.audit.adminChange({
+        actorUserId,
+        operation: 'replace',
+        entityType: 'grant',
+        entityId: grantId,
+        policyVersion: version,
+      });
       return toGrantResponse(result, dto.actions ?? []);
     });
   }
 
   /** 204 on success. Its `grant_actions` rows go with it (CASCADE). */
-  async delete(grantId: string): Promise<void> {
-    await this.policyChange.apply(async () => {
+  async delete(actorUserId: string, grantId: string): Promise<void> {
+    const { version } = await this.policyChange.apply(async () => {
       await this.findOrFail(grantId);
       await this.grantsRepository.delete(grantId);
+    });
+    this.audit.adminChange({
+      actorUserId,
+      operation: 'delete',
+      entityType: 'grant',
+      entityId: grantId,
+      policyVersion: version,
     });
   }
 

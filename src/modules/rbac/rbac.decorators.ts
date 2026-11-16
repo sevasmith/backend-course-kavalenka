@@ -1,5 +1,12 @@
-import { ExecutionContext, SetMetadata } from '@nestjs/common';
+import {
+  createParamDecorator,
+  ExecutionContext,
+  SetMetadata,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+
+import type { AuthenticatedRequest } from './rbac.guard';
 
 export const IS_PUBLIC_KEY = 'rbac:isPublic';
 export const REQUIRED_PERMISSION_KEY = 'rbac:requiredPermission';
@@ -18,6 +25,22 @@ export const RequirePermission = (permission: string, action: string) =>
     permission,
     action,
   });
+
+/**
+ * The id of the user making the request, from the auth context only (never
+ * from the body, params or headers). On a protected route the guard has
+ * already checked it is there; the throw is a second line of defence.
+ */
+export const ActorUserId = createParamDecorator(
+  (_data: unknown, context: ExecutionContext): string => {
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const userId = request.user?.id;
+    if (!userId) {
+      throw new UnauthorizedException();
+    }
+    return userId;
+  },
+);
 
 /**
  * What a route declares about access. `undeclared` (no decorator) and
