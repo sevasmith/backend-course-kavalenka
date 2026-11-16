@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { ArrayUnique, IsArray, IsUUID } from 'class-validator';
 
@@ -11,6 +12,12 @@ export class UserRolesBodyDto {
    * the same role and must count as a repeat (400), not reach the DB as two
    * rows and fail on the primary key.
    */
+  @ApiProperty({
+    type: [String],
+    format: 'uuid',
+    uniqueItems: true,
+    description: 'The complete new set of role ids. `[]` removes all roles.',
+  })
   @Transform(({ value }: { value: unknown }) =>
     Array.isArray(value)
       ? value.map((id: unknown) =>
@@ -28,8 +35,11 @@ export class UserRolesBodyDto {
 }
 
 /** The response of both GET and PUT: ids only, no user profile fields. */
-export interface UserRolesResponse {
+export class UserRolesResponse {
+  @ApiProperty({ format: 'uuid' })
   userId: string;
+
+  @ApiProperty({ type: [String], format: 'uuid' })
   roleIds: string[];
 }
 

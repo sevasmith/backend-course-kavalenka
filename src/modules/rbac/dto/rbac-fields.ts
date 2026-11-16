@@ -1,4 +1,5 @@
 import { applyDecorators } from '@nestjs/common';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -30,11 +31,22 @@ export function normalizeRbacName(value: unknown): unknown {
 }
 
 /**
+ * Each decorator below also documents the field for OpenAPI, so the docs
+ * and the validation rules come from the same constants and can't drift.
+ */
+
+/**
  * Normalizes, then validates a name. The DB unique constraint compares the
  * stored, normalized value, so `Admin` and ` admin ` collide with `admin`.
  */
-export const IsRbacName = () =>
+export const IsRbacName = (example: string) =>
   applyDecorators(
+    ApiProperty({
+      pattern: RBAC_NAME_PATTERN.source,
+      maxLength: 64,
+      example,
+      description: 'Trimmed and lowercased before validation.',
+    }),
     Transform(({ value }: { value: unknown }) => normalizeRbacName(value)),
     IsString(),
     Matches(RBAC_NAME_PATTERN, {
@@ -48,6 +60,13 @@ export const IsRbacName = () =>
  */
 export const IsRbacDescription = () =>
   applyDecorators(
+    ApiPropertyOptional({
+      type: String,
+      nullable: true,
+      maxLength: RBAC_DESCRIPTION_MAX_LENGTH,
+      description:
+        'Trimmed; an empty string becomes `null`. Missing on PUT clears it.',
+    }),
     Transform(({ value }: { value: unknown }) => {
       if (typeof value !== 'string') {
         return value;
@@ -81,11 +100,34 @@ const actionListRules = () => [
  * same action, so sending both is a 400, not a silent merge).
  */
 export const IsRbacActionList = () =>
-  applyDecorators(ArrayMinSize(1), ...actionListRules());
+  applyDecorators(
+    ApiProperty({
+      type: [String],
+      minItems: 1,
+      maxItems: RBAC_MAX_ACTIONS,
+      uniqueItems: true,
+      example: ['read', 'list'],
+      description:
+        'Action names, validated like `name`. On PUT, the complete new set.',
+    }),
+    ArrayMinSize(1),
+    ...actionListRules(),
+  );
 
 /**
  * The same list for a grant, where it may be missing or empty: that means
  * "all current and future actions of the permission" (`all_actions`).
  */
 export const IsOptionalRbacActionList = () =>
-  applyDecorators(IsOptional(), ...actionListRules());
+  applyDecorators(
+    ApiPropertyOptional({
+      type: [String],
+      maxItems: RBAC_MAX_ACTIONS,
+      uniqueItems: true,
+      example: ['read'],
+      description:
+        'Missing or `[]` grants all current and future actions of the permission.',
+    }),
+    IsOptional(),
+    ...actionListRules(),
+  );

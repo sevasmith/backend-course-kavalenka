@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { IsUUID } from 'class-validator';
 
 import { Grant } from '../grant.entity';
@@ -9,9 +10,11 @@ import { IsOptionalRbacActionList } from './rbac-fields';
  * "all actions", not "keep the current ones".
  */
 export class GrantBodyDto {
+  @ApiProperty({ format: 'uuid' })
   @IsUUID(undefined, { message: 'roleId must be a UUID' })
   roleId: string;
 
+  @ApiProperty({ format: 'uuid' })
   @IsUUID(undefined, { message: 'permissionId must be a UUID' })
   permissionId: string;
 
@@ -21,14 +24,32 @@ export class GrantBodyDto {
 }
 
 /** The grant as the API returns it. */
-export interface GrantResponse {
+export class GrantResponse {
+  @ApiProperty({ format: 'uuid' })
   id: string;
+
+  @ApiProperty({ format: 'uuid' })
   roleId: string;
+
+  @ApiProperty({ format: 'uuid' })
   permissionId: string;
+
+  @ApiProperty({
+    description: 'True when the grant covers every action of the permission.',
+  })
   allActions: boolean;
-  /** Always `[]` when `allActions` is true. */
+
+  @ApiProperty({
+    type: [String],
+    example: ['read'],
+    description: 'Always `[]` when `allActions` is true.',
+  })
   actions: string[];
+
+  @ApiProperty()
   createdAt: Date;
+
+  @ApiProperty()
   updatedAt: Date;
 }
 

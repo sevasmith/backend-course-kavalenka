@@ -1,3 +1,5 @@
+import { ApiProperty } from '@nestjs/swagger';
+
 import { Role } from '../role.entity';
 import { IsRbacDescription, IsRbacName } from './rbac-fields';
 
@@ -6,19 +8,31 @@ import { IsRbacDescription, IsRbacName } from './rbac-fields';
  * PUT is a full replacement: a missing `description` clears it.
  */
 export class RoleBodyDto {
-  @IsRbacName()
+  @IsRbacName('editor')
   name: string;
 
   @IsRbacDescription()
   description?: string | null;
 }
 
-/** The role as the API returns it: only role fields, nothing else. */
-export interface RoleResponse {
+/**
+ * The role as the API returns it: only role fields, nothing else. A class,
+ * not an interface, so Swagger can read its fields at runtime.
+ */
+export class RoleResponse {
+  @ApiProperty({ format: 'uuid' })
   id: string;
+
+  @ApiProperty({ example: 'editor' })
   name: string;
+
+  @ApiProperty({ type: String, nullable: true })
   description: string | null;
+
+  @ApiProperty()
   createdAt: Date;
+
+  @ApiProperty()
   updatedAt: Date;
 }
 

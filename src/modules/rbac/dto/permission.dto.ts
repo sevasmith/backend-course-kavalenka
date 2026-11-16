@@ -1,3 +1,5 @@
+import { ApiProperty } from '@nestjs/swagger';
+
 import { Permission } from '../permission.entity';
 import { IsRbacActionList, IsRbacDescription, IsRbacName } from './rbac-fields';
 
@@ -7,7 +9,7 @@ import { IsRbacActionList, IsRbacDescription, IsRbacName } from './rbac-fields';
  * `actions` is the complete new set, and a missing `description` clears it.
  */
 export class PermissionBodyDto {
-  @IsRbacName()
+  @IsRbacName('users')
   name: string;
 
   @IsRbacDescription()
@@ -18,12 +20,23 @@ export class PermissionBodyDto {
 }
 
 /** The permission as the API returns it, with its action names. */
-export interface PermissionResponse {
+export class PermissionResponse {
+  @ApiProperty({ format: 'uuid' })
   id: string;
+
+  @ApiProperty({ example: 'users' })
   name: string;
+
+  @ApiProperty({ type: String, nullable: true })
   description: string | null;
+
+  @ApiProperty({ type: [String], example: ['list', 'read'] })
   actions: string[];
+
+  @ApiProperty()
   createdAt: Date;
+
+  @ApiProperty()
   updatedAt: Date;
 }
 
