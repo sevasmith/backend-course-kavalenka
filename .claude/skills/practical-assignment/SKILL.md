@@ -26,6 +26,25 @@ Read, in this order:
 
 ## 3. Write the plan
 
+### Overview
+
+Before the task list, write a short **Overview**: the general path through this assignment, so Seva can see quickly what needs to be done.
+
+- A numbered list of about 5 to 8 stages. Group the tasks into stages; don't explain every task.
+- Each stage starts with a bold **title that is a simple action**, followed by its task numbers: `**Make tables to store who can do what** (tasks 1–3)`. Titles say what to do, not just a noun, and avoid technical terms.
+- Under the title, write 1 or 2 short sentences: what this stage does and why it comes at this point (what it unlocks or what depends on it).
+- After the list, add one line, `**In the end:** …`, saying what works once all tasks are done.
+- Use very simple, clear language, as if explaining to a child: short sentences, everyday words. Use a technical term only if Seva already knows it from earlier parts. No metaphors or analogies (restaurants, bouncers, etc.) and no code.
+
+Example stage:
+
+```markdown
+1. **Make tables to store who can do what** (tasks 1–3)
+   We need a place to keep roles, permissions and the links between them. Everything else uses these tables, so we make them first.
+```
+
+### Tasks
+
 - A numbered list of steps in build order. Each step builds on the previous ones and fits in roughly one sitting.
 - **Keep each step short**: one or two lines saying *what* to build. Leave out the *how*, code, and long explanations; those come later, one step at a time.
 - Cover the whole Practical Assignment, typically in this order:
@@ -54,6 +73,18 @@ Read, in this order:
   ```markdown
   # <number> <Name> — Plan
 
+  ## Overview
+
+  1. **<Simple action title>** (tasks 1–3)
+     <1–2 short sentences: what this stage does and why it comes here>
+  2. **<Simple action title>** (task 4)
+     <...>
+  ...
+
+  **In the end:** <what works once all tasks are done>
+
+  ## Tasks
+
   - [ ] 1. <step>
   - [ ] 2. <step>
   ...
@@ -64,7 +95,7 @@ Read, in this order:
   ```
 
 - Every step is an unticked checkbox with its number. The step is ticked (`- [x]`) once it is done and reviewed (see the `review-task` skill). Keep the numbers stable: other skills refer to tasks by number.
-- If the file already exists, show Seva what would change and ask before overwriting it. Keep the ticks of steps that are already done.
+- If the file already exists, show Seva what would change and ask before overwriting it. Keep the ticks of steps that are already done. If it has no Overview yet, add one.
 
 ## 5. Report back
 
