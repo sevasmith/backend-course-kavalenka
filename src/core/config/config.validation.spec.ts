@@ -61,11 +61,12 @@ describe('configValidationSchema', () => {
     });
   });
 
-  describe('authentication secret keys', () => {
+  describe('secret keys', () => {
     const keys = [
       'JWT_ACCESS_SECRET',
       'JWT_REFRESH_SECRET',
       'LOGIN_CHALLENGE_HMAC_KEY',
+      'REGISTRATION_CHALLENGE_HMAC_KEY',
     ] as const;
 
     it.each(keys)('%s is required', (key) => {
@@ -93,6 +94,15 @@ describe('configValidationSchema', () => {
       });
 
       expect(error?.message).toContain('at least 32 bytes');
+    });
+
+    it.each(keys)('%s rejects a key of only whitespace', (key) => {
+      const { error } = configValidationSchema.validate({
+        ...validEnv,
+        [key]: ' '.repeat(32),
+      });
+
+      expect(error?.message).toBe(`"${key}" must not be only whitespace`);
     });
 
     it.each(keys)('%s counts bytes, not characters', (key) => {

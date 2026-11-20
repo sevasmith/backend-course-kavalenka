@@ -7,18 +7,24 @@ const MIN_SECRET_BYTES = 32;
 /**
  * A required secret key of at least 32 bytes (`task.md`). Joi's `.min()`
  * counts characters, and one character can take several bytes in UTF-8,
- * so the length is checked in bytes. No default: the app must never make up
- * a key, and a missing one stops it at startup.
+ * so the length is checked in bytes. A key of only whitespace is rejected
+ * too: it passes the length check but is no secret at all. No default: the
+ * app must never make up a key, and a missing one stops it at startup.
  */
 const secretKey = () =>
   Joi.string()
     .required()
-    .custom((value: string, helpers) =>
-      Buffer.byteLength(value, 'utf8') < MIN_SECRET_BYTES
-        ? helpers.error('string.minBytes', { limit: MIN_SECRET_BYTES })
-        : value,
-    )
+    .custom((value: string, helpers) => {
+      if (value.trim() === '') {
+        return helpers.error('string.blank');
+      }
+      if (Buffer.byteLength(value, 'utf8') < MIN_SECRET_BYTES) {
+        return helpers.error('string.minBytes', { limit: MIN_SECRET_BYTES });
+      }
+      return value;
+    })
     .messages({
+      'string.blank': '{{#label}} must not be only whitespace',
       'string.minBytes': '{{#label}} must be at least {{#limit}} bytes long',
     });
 
@@ -77,7 +83,7 @@ const SECRET_KEYS = [
   'REGISTRATION_CHALLENGE_HMAC_KEY',
 ] as const satisfies readonly (keyof Config)[];
 
-/** The first two secret keys that have the same value, or `null`. */
+/** Names of the first two variables that hold the same secret, or `null`. */
 function findSharedSecretKeys(
   config: Pick<Config, (typeof SECRET_KEYS)[number]>,
 ): [string, string] | null {
@@ -125,7 +131,7 @@ export const configValidationSchema = Joi.object<Config>({
     .valid('otp', 'magic_link')
     .optional()
     .default('otp'),
-  REGISTRATION_CHALLENGE_HMAC_KEY: Joi.string().min(32).required(),
+  REGISTRATION_CHALLENGE_HMAC_KEY: secretKey(),
   REGISTRATION_CONFIRM_URL: Joi.string()
     .uri({ scheme: ['http', 'https'] })
     .when('REGISTRATION_EMAIL_CONFIRMATION_METHOD', {
