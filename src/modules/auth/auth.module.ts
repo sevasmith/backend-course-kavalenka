@@ -6,6 +6,7 @@ import { PasswordService } from './password.service';
 import { AuthService } from './auth.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { TokenService } from './token.service';
 import { UsersModule } from '../users/users.module';
 import { RbacModule } from '../rbac/rbac.module';
 
@@ -17,6 +18,11 @@ import { RbacModule } from '../rbac/rbac.module';
     TypeOrmModule.forFeature([RegistrationChallenge]),
   ],
   controllers: [AuthController],
-  providers: [PasswordService, AuthService, RegistrationChallengeService],
+  providers: [
+    PasswordService,
+    AuthService,
+    RegistrationChallengeService,
+    TokenService,
+  ],
 })
 export class AuthModule {}
