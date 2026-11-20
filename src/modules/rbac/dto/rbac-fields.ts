@@ -1,0 +1,133 @@
+import { applyDecorators } from '@nestjs/common';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
+
+/**
+ * Role, permission and action names (`task.md`): 1 to 64 characters, a
+ * lowercase letter first, then lowercase letters, digits, `.`, `_` or `-`.
+ */
+export const RBAC_NAME_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
+
+export const RBAC_DESCRIPTION_MAX_LENGTH = 500;
+
+export const RBAC_MAX_ACTIONS = 64;
+
+const RBAC_NAME_MESSAGE =
+  'must be 1-64 characters: a lowercase letter, then lowercase letters, digits, ".", "_" or "-"';
+
+/** Trims and lowercases a string; leaves other types for the validators. */
+export function normalizeRbacName(value: unknown): unknown {
+  return typeof value === 'string' ? value.trim().toLowerCase() : value;
+}
+
+/**
+ * Each decorator below also documents the field for OpenAPI, so the docs
+ * and the validation rules come from the same constants and can't drift.
+ */
+
+/**
+ * Normalizes, then validates a name. The DB unique constraint compares the
+ * stored, normalized value, so `Admin` and ` admin ` collide with `admin`.
+ */
+export const IsRbacName = (example: string) =>
+  applyDecorators(
+    ApiProperty({
+      pattern: RBAC_NAME_PATTERN.source,
+      maxLength: 64,
+      example,
+      description: 'Trimmed and lowercased before validation.',
+    }),
+    Transform(({ value }: { value: unknown }) => normalizeRbacName(value)),
+    IsString(),
+    Matches(RBAC_NAME_PATTERN, {
+      message: `$property ${RBAC_NAME_MESSAGE}`,
+    }),
+  );
+
+/**
+ * An optional description: trimmed, at most 500 characters, and an empty
+ * string becomes `null`, so "no description" has a single representation.
+ */
+export const IsRbacDescription = () =>
+  applyDecorators(
+    ApiPropertyOptional({
+      type: String,
+      nullable: true,
+      maxLength: RBAC_DESCRIPTION_MAX_LENGTH,
+      description:
+        'Trimmed; an empty string becomes `null`. Missing on PUT clears it.',
+    }),
+    Transform(({ value }: { value: unknown }) => {
+      if (typeof value !== 'string') {
+        return value;
+      }
+      const trimmed = value.trim();
+      return trimmed === '' ? null : trimmed;
+    }),
+    IsOptional(),
+    IsString(),
+    MaxLength(RBAC_DESCRIPTION_MAX_LENGTH),
+  );
+
+/** The rules every action list shares, whatever its minimum size. */
+const actionListRules = () => [
+  Transform(({ value }: { value: unknown }) =>
+    Array.isArray(value) ? value.map(normalizeRbacName) : value,
+  ),
+  IsArray(),
+  ArrayMaxSize(RBAC_MAX_ACTIONS),
+  IsString({ each: true }),
+  Matches(RBAC_NAME_PATTERN, {
+    each: true,
+    message: `each value in $property ${RBAC_NAME_MESSAGE}`,
+  }),
+  ArrayUnique(undefined, { message: '$property must not contain repeats' }),
+];
+
+/**
+ * A list of action names: each one normalized and validated like a name,
+ * 1 to 64 of them, no repeats after normalization (`Read` and `read` are the
+ * same action, so sending both is a 400, not a silent merge).
+ */
+export const IsRbacActionList = () =>
+  applyDecorators(
+    ApiProperty({
+      type: [String],
+      minItems: 1,
+      maxItems: RBAC_MAX_ACTIONS,
+      uniqueItems: true,
+      example: ['read', 'list'],
+      description:
+        'Action names, validated like `name`. On PUT, the complete new set.',
+    }),
+    ArrayMinSize(1),
+    ...actionListRules(),
+  );
+
+/**
+ * The same list for a grant, where it may be missing or empty: that means
+ * "all current and future actions of the permission" (`all_actions`).
+ */
+export const IsOptionalRbacActionList = () =>
+  applyDecorators(
+    ApiPropertyOptional({
+      type: [String],
+      maxItems: RBAC_MAX_ACTIONS,
+      uniqueItems: true,
+      example: ['read'],
+      description:
+        'Missing or `[]` grants all current and future actions of the permission.',
+    }),
+    IsOptional(),
+    ...actionListRules(),
+  );

@@ -12,6 +12,7 @@ import { ConfigService } from '@/core/config/config.service';
 import { MailService } from '@/core/mail/mail.service';
 import { PasswordService } from './password.service';
 import { UsersService } from '../users/users.service';
+import { RbacDefaultRoleService } from '../rbac/rbac-default-role.service';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
@@ -21,6 +22,7 @@ import {
   RegisterPendingResult,
   RegisterResult,
 } from './auth.types';
+import { User } from '../users/user.entity';
 import { UserStatus } from '../users/user.types';
 import { RegistrationChallengeService } from './registration-challenge.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
@@ -55,6 +57,7 @@ export class AuthService {
     private readonly usersService: UsersService,
     private readonly registrationChallengeService: RegistrationChallengeService,
     private readonly mailService: MailService,
+    private readonly defaultRoleService: RbacDefaultRoleService,
   ) {}
 
   /**
@@ -83,11 +86,7 @@ export class AuthService {
         return result;
       }
 
-      const user = await this.usersService.createUser({
-        email: dto.email,
-        passwordHash,
-        status: UserStatus.ACTIVE,
-      });
+      const user = await this.registerActive(dto.email, passwordHash);
       this.logger.log(
         `Registration created, status=${user.status}, userId=${user.id}`,
       );
@@ -231,6 +230,8 @@ export class AuthService {
     }
 
     await this.usersService.updateStatus(user.id, UserStatus.ACTIVE);
+    // Same transaction: the user is never active without the `user` role.
+    await this.defaultRoleService.assignToActivatedUser(user.id);
     await this.registrationChallengeService.consume(
       challenge,
       RegistrationChallengeConsumedReason.CONFIRMED,
@@ -337,6 +338,25 @@ export class AuthService {
     this.logger.warn(
       `Registration resend rejected, reason=${reason}, attemptId=${attemptId ?? 'unknown'}`,
     );
+  }
+
+  /**
+   * Registration without confirmation: creates the active user and gives it
+   * the `user` role in one transaction, so a failed role insert also rolls
+   * back the user.
+   */
+  @Transactional()
+  private async registerActive(
+    email: string,
+    passwordHash: string,
+  ): Promise<User> {
+    const user = await this.usersService.createUser({
+      email,
+      passwordHash,
+      status: UserStatus.ACTIVE,
+    });
+    await this.defaultRoleService.assignToActivatedUser(user.id);
+    return user;
   }
 
   /**

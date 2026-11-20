@@ -13,6 +13,7 @@ import { MailService } from '@/core/mail/mail.service';
 import { User } from '@/modules/users/user.entity';
 import { UserStatus } from '@/modules/users/user.types';
 import { UsersService } from '@/modules/users/users.service';
+import { RbacDefaultRoleService } from '@/modules/rbac/rbac-default-role.service';
 import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RegistrationChallengeService } from './registration-challenge.service';
@@ -23,8 +24,11 @@ import {
 } from './registration-challenge.types';
 
 // The real decorator needs a DataSource; unit tests only check the service logic.
+// `IsolationLevel` is read at import time by the RBAC services AuthService
+// now depends on.
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => undefined,
+  IsolationLevel: { REPEATABLE_READ: 'REPEATABLE READ' },
 }));
 
 describe('AuthService', () => {
@@ -53,6 +57,7 @@ describe('AuthService', () => {
     sendRegistrationOtp: jest.Mock;
     sendRegistrationMagicLink: jest.Mock;
   };
+  let defaultRoleService: { assignToActivatedUser: jest.Mock };
 
   let logs: string[];
 
@@ -101,6 +106,9 @@ describe('AuthService', () => {
       sendRegistrationOtp: jest.fn().mockResolvedValue(undefined),
       sendRegistrationMagicLink: jest.fn().mockResolvedValue(undefined),
     };
+    defaultRoleService = {
+      assignToActivatedUser: jest.fn().mockResolvedValue('assigned'),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -113,6 +121,7 @@ describe('AuthService', () => {
           useValue: challengeService,
         },
         { provide: MailService, useValue: mailService },
+        { provide: RbacDefaultRoleService, useValue: defaultRoleService },
       ],
     }).compile();
 
@@ -147,6 +156,21 @@ describe('AuthService', () => {
         passwordHash: hash,
         status: UserStatus.ACTIVE,
       });
+    });
+
+    it('gives the new active user the user role', async () => {
+      await service.register(dto);
+
+      expect(defaultRoleService.assignToActivatedUser).toHaveBeenCalledWith(
+        'user-id',
+      );
+    });
+
+    it('fails the registration when the role cannot be assigned', async () => {
+      const failure = new Error('db down');
+      defaultRoleService.assignToActivatedUser.mockRejectedValue(failure);
+
+      await expect(service.register(dto)).rejects.toBe(failure);
     });
 
     it('does not send an email', async () => {
@@ -192,6 +216,12 @@ describe('AuthService', () => {
         'user-id',
         RegistrationChallengeMethod.OTP,
       );
+    });
+
+    it('does not give a pending user any role', async () => {
+      await service.register(dto);
+
+      expect(defaultRoleService.assignToActivatedUser).not.toHaveBeenCalled();
     });
 
     it('returns the pending result without the secret', async () => {
@@ -322,6 +352,9 @@ describe('AuthService', () => {
         expect(challengeService.consume).toHaveBeenCalledWith(
           challenge,
           RegistrationChallengeConsumedReason.CONFIRMED,
+        );
+        expect(defaultRoleService.assignToActivatedUser).toHaveBeenCalledWith(
+          'user-id',
         );
       });
 
@@ -489,6 +522,7 @@ describe('AuthService', () => {
         await expectInvalid(service.confirmRegistration(otpDto));
         expect(challengeService.consume).not.toHaveBeenCalled();
         expect(usersService.updateStatus).not.toHaveBeenCalled();
+        expect(defaultRoleService.assignToActivatedUser).not.toHaveBeenCalled();
       });
     });
   });

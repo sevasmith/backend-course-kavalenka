@@ -6,10 +6,10 @@ The Health module provides a health check endpoint at `GET /health`
 
 The health check is controlled by the `HEALTH_CHECK_ENABLED` environment variable:
 
-| Value   | Behavior                                         |
-| ------- | ------------------------------------------------ |
-| `true`  | Full health check is performed                   |
-| `false` | Returns an empty response (default)              |
+| Value   | Behavior                                 |
+| ------- | ---------------------------------------- |
+| `true`  | Full health check is performed (default) |
+| `false` | Returns an empty response                |
 
 Add to your `.env` file:
 
@@ -17,7 +17,13 @@ Add to your `.env` file:
 HEALTH_CHECK_ENABLED=true
 ```
 
-**Note:** When disabled (default), the endpoint still responds but skips all health indicators and returns `{ status: 'ok', details: {} }`.
+**Note:** When disabled, the endpoint still responds but skips all health indicators and returns `{ status: 'ok', details: {} }`. That includes the RBAC readiness check, so keep it enabled wherever `/health` is used as the readiness probe.
+
+## Checks
+
+| Key    | Down when                                                             |
+| ------ | --------------------------------------------------------------------- |
+| `rbac` | the RBAC policy snapshot can't be loaded or its version can't be read |
 
 ## Adding New Health Checks
 

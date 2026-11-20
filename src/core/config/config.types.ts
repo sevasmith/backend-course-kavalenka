@@ -31,6 +31,16 @@ export interface Config {
   REGISTRATION_CONFIRM_URL?: string;
 
   /**
+   * RBAC options
+   */
+  /**
+   * The user who gets the `admin` role during the one-time RBAC bootstrap.
+   * Optional: while it is unset or the user doesn't exist, the bootstrap is
+   * skipped and retried on the next start.
+   */
+  RBAC_BOOTSTRAP_ADMIN_USER_ID?: string;
+
+  /**
    * SMTP options
    */
   SMTP_HOST: string;

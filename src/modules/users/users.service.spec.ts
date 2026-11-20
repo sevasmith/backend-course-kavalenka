@@ -71,12 +71,12 @@ describe('UsersService', () => {
     });
   });
 
-  it('finds a user by id and locks the row', async () => {
+  it('finds a user by id and locks the row without blocking FK checks', async () => {
     await service.findByIdForUpdate('user-id');
 
     expect(repository.findOne).toHaveBeenCalledWith({
       where: { id: 'user-id' },
-      lock: { mode: 'pessimistic_write' },
+      lock: { mode: 'for_no_key_update' },
     });
   });
 

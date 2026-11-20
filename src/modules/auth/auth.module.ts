@@ -7,10 +7,12 @@ import { AuthService } from './auth.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import { RegistrationChallengeService } from './registration-challenge.service';
 import { UsersModule } from '../users/users.module';
+import { RbacModule } from '../rbac/rbac.module';
 
 @Module({
   imports: [
     UsersModule,
+    RbacModule,
     MailModule,
     TypeOrmModule.forFeature([RegistrationChallenge]),
   ],
