@@ -106,6 +106,39 @@ describe('configValidationSchema', () => {
     });
   });
 
+  describe('different secret keys', () => {
+    it.each([
+      ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'],
+      ['JWT_ACCESS_SECRET', 'LOGIN_CHALLENGE_HMAC_KEY'],
+      ['JWT_REFRESH_SECRET', 'LOGIN_CHALLENGE_HMAC_KEY'],
+      ['LOGIN_CHALLENGE_HMAC_KEY', 'REGISTRATION_CHALLENGE_HMAC_KEY'],
+    ])('rejects %s equal to %s', (first, second) => {
+      const shared = 's'.repeat(32);
+
+      const { error } = configValidationSchema.validate({
+        ...validEnv,
+        [first]: shared,
+        [second]: shared,
+      });
+
+      expect(error?.message).toBe(
+        `${first} and ${second} must be different keys`,
+      );
+    });
+
+    it('never puts a key value in the error message', () => {
+      const shared = 'super-secret-value-'.padEnd(32, 'x');
+
+      const { error } = configValidationSchema.validate({
+        ...validEnv,
+        JWT_ACCESS_SECRET: shared,
+        JWT_REFRESH_SECRET: shared,
+      });
+
+      expect(error?.message).not.toContain(shared);
+    });
+  });
+
   describe('JWT_ISSUER and JWT_AUDIENCE', () => {
     it.each(['JWT_ISSUER', 'JWT_AUDIENCE'])('%s is required', (key) => {
       const env: Record<string, string> = { ...validEnv };

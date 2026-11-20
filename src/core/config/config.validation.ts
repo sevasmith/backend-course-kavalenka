@@ -63,6 +63,35 @@ function isExactOrigin(value: string): boolean {
   }
 }
 
+/**
+ * Keys that must never share a value (1.2: "a shared key for access, refresh,
+ * and the email challenge is forbidden"). With one key, a token signed for
+ * one purpose would verify for another, e.g. a refresh token passing the
+ * access check if `token_use` were ever skipped. The registration key is
+ * included so registration and login secrets stay independent too.
+ */
+const SECRET_KEYS = [
+  'JWT_ACCESS_SECRET',
+  'JWT_REFRESH_SECRET',
+  'LOGIN_CHALLENGE_HMAC_KEY',
+  'REGISTRATION_CHALLENGE_HMAC_KEY',
+] as const satisfies readonly (keyof Config)[];
+
+/** The first two secret keys that have the same value, or `null`. */
+function findSharedSecretKeys(
+  config: Pick<Config, (typeof SECRET_KEYS)[number]>,
+): [string, string] | null {
+  const seen = new Map<string, string>();
+  for (const key of SECRET_KEYS) {
+    const other = seen.get(config[key]);
+    if (other) {
+      return [other, key];
+    }
+    seen.set(config[key], key);
+  }
+  return null;
+}
+
 export const configValidationSchema = Joi.object<Config>({
   PORT: Joi.number().port().required(),
   NODE_ENV: Joi.string().valid('development', 'production', 'test').required(),
@@ -157,4 +186,15 @@ export const configValidationSchema = Joi.object<Config>({
   POSTGRES_SYNCHRONIZE: Joi.boolean().optional().default(false),
   POSTGRES_LOGGING: Joi.boolean().optional().default(false),
   POSTGRES_MIGRATIONS_RUN: Joi.boolean().optional().default(false),
-});
+})
+  .custom((config: Config, helpers) => {
+    const shared = findSharedSecretKeys(config);
+    return shared
+      ? helpers.error('object.sharedSecret', { keys: shared.join(' and ') })
+      : config;
+  })
+  .messages({
+    // Names the variables only: the error goes to the startup log, so it
+    // must never contain the key values.
+    'object.sharedSecret': '{{#keys}} must be different keys',
+  });

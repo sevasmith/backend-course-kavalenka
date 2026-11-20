@@ -32,19 +32,20 @@ async function bootstrap() {
     }),
   );
 
+  const configService = app.get(ConfigService);
+
+  /**
+   * Only the exact origins from `TRUSTED_ORIGINS` may call the API from a
+   * browser with cookies. An empty list (frontend on the same origin) allows
+   * no cross-origin requests. The CSRF check (task 16) uses the same list.
+   */
   app.enableCors({
-    origin: [
-      'http://localhost:5174',
-      'http://localhost:4200',
-      'http://localhost:8080',
-    ],
+    origin: configService.get('TRUSTED_ORIGINS'),
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 204,
   });
-
-  const configService = app.get(ConfigService);
 
   await app.register(fastifyCookie, {
     secret: configService.get('COOKIE_SECRET'),
