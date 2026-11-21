@@ -22,3 +22,16 @@ export const LoginChallengeConsumedReason = {
 
 export type LoginChallengeConsumedReason =
   (typeof LoginChallengeConsumedReason)[keyof typeof LoginChallengeConsumedReason];
+
+/**
+ * Both methods live 10 minutes, counted from `last_sent_at`.
+ */
+export const LOGIN_CHALLENGE_TTL_SECONDS = 600;
+
+/**
+ * Parts of the magic link token `attemptId.secret`. The secret is never stored.
+ */
+export interface LoginMagicLinkToken {
+  attemptId: string;
+  secret: string;
+}
