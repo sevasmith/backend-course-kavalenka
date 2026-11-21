@@ -1,3 +1,4 @@
+import fastifyCookie from '@fastify/cookie';
 import { ValidationPipe } from '@nestjs/common';
 import {
   FastifyAdapter,
@@ -117,6 +118,8 @@ export async function createTestApp(
   );
   // The same pipe as in main.ts.
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  // The same cookie plugin as in main.ts: login sets the auth cookies with it.
+  await app.register(fastifyCookie);
   if (options.authenticateFromHeader) {
     authenticateFromTestHeader(app);
   }

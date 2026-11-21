@@ -12,6 +12,8 @@ import { Public } from '@/modules/rbac/rbac.decorators';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
+import { LoginDto } from './dto/login.dto';
+import { setAuthCookies } from './auth-cookies';
 import { AuthService } from './auth.service';
 import {
   ConfirmRegistrationResult,
@@ -68,5 +70,22 @@ export class AuthController {
     @Body() dto: ResendRegistrationDto,
   ): Promise<RegisterPendingResult> {
     return this.authService.resendRegistration(dto);
+  }
+
+  /**
+   * Direct login: 204 with the `access_token` and `refresh_token` cookies and
+   * no body. The tokens are never in the body, so JavaScript can't read them.
+   * 401 `invalid_credentials` for any wrong login, 503 (no cookies) if
+   * signing fails.
+   */
+  @Post('login')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async login(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<void> {
+    const { accessToken, refreshToken } = await this.authService.login(dto);
+    setAuthCookies(reply, accessToken, refreshToken);
   }
 }

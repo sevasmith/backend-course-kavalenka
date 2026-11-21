@@ -19,6 +19,7 @@ import { RbacDefaultRoleService } from '@/modules/rbac/rbac-default-role.service
 import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { TokenService } from './token.service';
 import { INVALID_CREDENTIALS_MESSAGE } from './auth.types';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import {
@@ -65,6 +66,7 @@ describe('AuthService', () => {
     sendRegistrationMagicLink: jest.Mock;
   };
   let defaultRoleService: { assignToActivatedUser: jest.Mock };
+  let tokenService: { signAccess: jest.Mock; signRefresh: jest.Mock };
 
   let logs: string[];
 
@@ -121,6 +123,11 @@ describe('AuthService', () => {
       assignToActivatedUser: jest.fn().mockResolvedValue('assigned'),
     };
 
+    tokenService = {
+      signAccess: jest.fn().mockReturnValue('access.jwt'),
+      signRefresh: jest.fn().mockReturnValue('refresh.jwt'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -133,6 +140,7 @@ describe('AuthService', () => {
         },
         { provide: MailService, useValue: mailService },
         { provide: RbacDefaultRoleService, useValue: defaultRoleService },
+        { provide: TokenService, useValue: tokenService },
       ],
     }).compile();
 
@@ -912,5 +920,72 @@ describe('AuthService', () => {
         expect(passwordService.verify).toHaveBeenCalledWith(hash, dto.password);
       },
     );
+  });
+
+  describe('login', () => {
+    const activeUser: User = {
+      id: 'user-id',
+      email: dto.email,
+      passwordHash: hash,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    beforeEach(() => {
+      config.get.mockReturnValue(false);
+      usersService.findByEmail.mockResolvedValue(activeUser);
+      passwordService.verify.mockResolvedValue(true);
+    });
+
+    it('signs both tokens for the user id', async () => {
+      await expect(service.login(dto)).resolves.toEqual({
+        accessToken: 'access.jwt',
+        refreshToken: 'refresh.jwt',
+      });
+      expect(config.get).toHaveBeenCalledWith(
+        'LOGIN_EMAIL_CONFIRMATION_ENABLED',
+      );
+      expect(tokenService.signAccess).toHaveBeenCalledWith('user-id');
+      expect(tokenService.signRefresh).toHaveBeenCalledWith('user-id');
+    });
+
+    it('signs nothing when the credentials are wrong', async () => {
+      passwordService.verify.mockResolvedValue(false);
+
+      await expect(service.login(dto)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(tokenService.signAccess).not.toHaveBeenCalled();
+      expect(tokenService.signRefresh).not.toHaveBeenCalled();
+    });
+
+    it.each(['signAccess', 'signRefresh'] as const)(
+      'returns 503 when %s fails, and logs no token or secret',
+      async (method) => {
+        tokenService[method].mockImplementation(() => {
+          throw new Error('secretOrPrivateKey must have a value');
+        });
+
+        const error: unknown = await service
+          .login(dto)
+          .catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect((error as ServiceUnavailableException).getResponse()).toEqual({
+          code: ErrorCode.SERVICE_UNAVAILABLE,
+          message: 'Login is temporarily unavailable',
+        });
+        expectLogsWithout('access.jwt', 'secretOrPrivateKey');
+      },
+    );
+
+    it('refuses while the email step is not implemented (task 10)', async () => {
+      config.get.mockReturnValue(true);
+
+      await expect(service.login(dto)).rejects.toThrow('not implemented');
+      expect(usersService.findByEmail).not.toHaveBeenCalled();
+      expect(tokenService.signAccess).not.toHaveBeenCalled();
+    });
   });
 });

@@ -58,3 +58,9 @@ export const INVALID_CREDENTIALS_MESSAGE = 'Invalid email or password';
 export interface LoginUser {
   id: string;
 }
+
+/** The pair a successful login (or refresh) puts into the two cookies. */
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+}

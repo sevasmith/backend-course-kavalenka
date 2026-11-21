@@ -20,6 +20,7 @@ import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import { LoginDto } from './dto/login.dto';
 import {
+  AuthTokens,
   ConfirmationOutcome,
   ConfirmRegistrationResult,
   INVALID_CREDENTIALS_MESSAGE,
@@ -30,6 +31,7 @@ import {
 import { User } from '../users/user.entity';
 import { UserStatus } from '../users/user.types';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { TokenService } from './token.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import {
   INVALID_REGISTRATION_CONFIRMATION_MESSAGE,
@@ -63,6 +65,7 @@ export class AuthService {
     private readonly registrationChallengeService: RegistrationChallengeService,
     private readonly mailService: MailService,
     private readonly defaultRoleService: RbacDefaultRoleService,
+    private readonly tokenService: TokenService,
   ) {}
 
   /**
@@ -106,6 +109,21 @@ export class AuthService {
   }
 
   /**
+   * `POST /auth/login`. Only the direct path for now: the email step
+   * (`LOGIN_EMAIL_CONFIRMATION_ENABLED=true`, 202) comes in task 10.
+   */
+  async login(dto: LoginDto): Promise<AuthTokens> {
+    // TODO(task 10): create a login challenge and send the email instead.
+    // Until then, refuse rather than skip a step the config asks for.
+    if (this.configService.get('LOGIN_EMAIL_CONFIRMATION_ENABLED')) {
+      throw new Error('Login email confirmation is not implemented yet');
+    }
+
+    const user = await this.checkCredentials(dto);
+    return this.signTokens(user.id);
+  }
+
+  /**
    * The password check of `POST /auth/login`. An unknown email, a wrong
    * password and any status other than `active` throw the same 401, so the
    * response never tells whether the account exists or what state it is in.
@@ -129,6 +147,31 @@ export class AuthService {
     }
 
     return { id: user.id };
+  }
+
+  /**
+   * Signs both tokens before anything is sent: if either fails, the caller
+   * gets a 503 and sets no cookies, so the client never holds half a pair.
+   * Refresh (task 13) and the login confirmation (task 11) reuse this.
+   */
+  private signTokens(userId: string): AuthTokens {
+    try {
+      return {
+        accessToken: this.tokenService.signAccess(userId),
+        refreshToken: this.tokenService.signRefresh(userId),
+      };
+    } catch (error) {
+      // Only the error name: the message could contain claims or key details.
+      this.logger.error(
+        `Token signing failed, userId=${userId}: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
   }
 
   /**

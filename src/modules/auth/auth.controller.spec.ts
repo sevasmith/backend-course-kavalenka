@@ -1,4 +1,9 @@
-import { BadRequestException, HttpStatus } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpStatus,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Test, TestingModule } from '@nestjs/testing';
 import type { FastifyReply } from 'fastify';
@@ -8,6 +13,9 @@ import { AuthService } from './auth.service';
 import { isRegistrationThrottled } from '@/core/throttler/throttler.decorators';
 import type { ExecutionContext } from '@nestjs/common';
 import { RegistrationChallengeMethod } from './registration-challenge.types';
+import { REFRESH_TOKEN_COOKIE } from './auth-cookies';
+import { ACCESS_TOKEN_COOKIE } from '@/core/http/openapi';
+import { IS_PUBLIC_KEY } from '@/modules/rbac/rbac.decorators';
 
 describe('AuthController', () => {
   const dto = { email: 'user@example.com', password: 'secret12' };
@@ -17,16 +25,18 @@ describe('AuthController', () => {
     register: jest.Mock;
     confirmRegistration: jest.Mock;
     resendRegistration: jest.Mock;
+    login: jest.Mock;
   };
-  let reply: { status: jest.Mock };
+  let reply: { status: jest.Mock; setCookie: jest.Mock };
 
   beforeEach(async () => {
     authService = {
       register: jest.fn(),
       confirmRegistration: jest.fn(),
       resendRegistration: jest.fn(),
+      login: jest.fn(),
     };
-    reply = { status: jest.fn() };
+    reply = { status: jest.fn(), setCookie: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AuthController],
@@ -132,5 +142,46 @@ describe('AuthController', () => {
         false,
       );
     });
+  });
+
+  describe('login', () => {
+    const login = () => controller.login(dto, reply as unknown as FastifyReply);
+
+    it('answers 204 and sets both cookies, with no body', async () => {
+      authService.login.mockResolvedValue({
+        accessToken: 'access.jwt',
+        refreshToken: 'refresh.jwt',
+      });
+
+      await expect(login()).resolves.toBeUndefined();
+      expect(authService.login).toHaveBeenCalledWith(dto);
+      expect(reply.setCookie).toHaveBeenCalledWith(
+        ACCESS_TOKEN_COOKIE,
+        'access.jwt',
+        expect.any(Object),
+      );
+      expect(reply.setCookie).toHaveBeenCalledWith(
+        REFRESH_TOKEN_COOKIE,
+        'refresh.jwt',
+        expect.any(Object),
+      );
+      expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler('login'))).toBe(
+        HttpStatus.NO_CONTENT,
+      );
+    });
+
+    it('is public: a guest has no access token yet', () => {
+      expect(Reflect.getMetadata(IS_PUBLIC_KEY, handler('login'))).toBe(true);
+    });
+
+    it.each([new UnauthorizedException(), new ServiceUnavailableException()])(
+      'sets no cookies when the service throws %p',
+      async (error) => {
+        authService.login.mockRejectedValue(error);
+
+        await expect(login()).rejects.toBe(error);
+        expect(reply.setCookie).not.toHaveBeenCalled();
+      },
+    );
   });
 });
