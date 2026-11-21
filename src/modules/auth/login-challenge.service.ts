@@ -14,6 +14,7 @@ import { ConfigService } from '@/core/config/config.service';
 import { LoginChallenge } from './login-challenge.entity';
 import {
   CreatedLoginChallenge,
+  LOGIN_CHALLENGE_MAX_ATTEMPTS,
   LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
   LOGIN_CHALLENGE_TTL_SECONDS,
   LoginChallengeConsumedReason,
@@ -67,6 +68,49 @@ export class LoginChallengeService {
       where: { userId, consumedAt: IsNull() },
       lock: { mode: 'pessimistic_write' },
     });
+  }
+
+  /**
+   * By `attemptId`, whatever its state. Not locked: confirm and resend use it
+   * only to learn `user_id`, so they can lock the user first and then re-read
+   * the attempt with `findByIdForUpdate`.
+   */
+  findById(attemptId: string): Promise<LoginChallenge | null> {
+    return this.challengesRepository.findOne({ where: { id: attemptId } });
+  }
+
+  /**
+   * By `attemptId`, locked (`SELECT ... FOR UPDATE`) until the transaction
+   * ends: a parallel confirm of the same attempt waits here and then sees the
+   * committed counter and `consumed_at`. Lock the user first. Must be called
+   * inside a transaction.
+   */
+  findByIdForUpdate(attemptId: string): Promise<LoginChallenge | null> {
+    return this.challengesRepository.findOne({
+      where: { id: attemptId },
+      lock: { mode: 'pessimistic_write' },
+    });
+  }
+
+  /**
+   * Counts a wrong OTP. The fifth one also consumes the attempt as
+   * `attempts_exhausted`, so the next request gets 429 even with the correct
+   * code. The row is locked by the caller, so reading `attempts` and writing
+   * `attempts + 1` cannot race.
+   */
+  async registerWrongOtp(challenge: LoginChallenge): Promise<LoginChallenge> {
+    const attempts = challenge.attempts + 1;
+    const exhausted = attempts >= LOGIN_CHALLENGE_MAX_ATTEMPTS;
+    const changes = {
+      attempts,
+      consumedAt: exhausted ? new Date() : null,
+      consumedReason: exhausted
+        ? LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED
+        : null,
+    };
+
+    await this.challengesRepository.update(challenge.id, changes);
+    return { ...challenge, ...changes };
   }
 
   /**

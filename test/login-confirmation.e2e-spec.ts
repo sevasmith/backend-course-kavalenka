@@ -173,4 +173,123 @@ describe('Login with email confirmation (e2e)', () => {
 
     expect(await attemptsOf(email)).toHaveLength(0);
   });
+
+  describe('POST /auth/login/confirm', () => {
+    const confirm = (body: object) =>
+      http().post('/auth/login/confirm').send(body);
+
+    /** Logs in and returns the attempt id and the emailed code. */
+    const startLogin = async () => {
+      const email = await createUser();
+      const res = await login(email).expect(202);
+      const { attemptId } = res.body as { attemptId: string };
+      return { email, attemptId, code: mail.lastSecret(email) };
+    };
+
+    const wrongCodeFor = (code: string) =>
+      code === '000000' ? '111111' : '000000';
+
+    const setCookies = (res: request.Response): string[] => {
+      const header = res.headers['set-cookie'] as string[] | string | undefined;
+      if (header === undefined) return [];
+      return Array.isArray(header) ? header : [header];
+    };
+
+    it('answers 204 with both cookies and consumes the attempt as confirmed', async () => {
+      const { email, attemptId, code } = await startLogin();
+
+      const res = await confirm({ attemptId, code }).expect(204);
+
+      expect(res.text).toBe('');
+      const cookies = setCookies(res);
+      expect(cookies).toHaveLength(2);
+      expect(cookies.some((c) => c.startsWith('access_token='))).toBe(true);
+      expect(cookies.some((c) => c.startsWith('refresh_token='))).toBe(true);
+      expect((await attemptsOf(email))[0].consumed_reason).toBe('confirmed');
+    });
+
+    it('answers 400 when the same code is used again', async () => {
+      const { attemptId, code } = await startLogin();
+      await confirm({ attemptId, code }).expect(204);
+
+      const res = await confirm({ attemptId, code }).expect(400);
+
+      expect(setCookies(res)).toHaveLength(0);
+      expect(res.body).toMatchObject({ code: 'bad_request' });
+    });
+
+    it('accepts the correct code as the fifth entry', async () => {
+      const { attemptId, code } = await startLogin();
+      for (let i = 0; i < 4; i++) {
+        await confirm({ attemptId, code: wrongCodeFor(code) }).expect(400);
+      }
+
+      await confirm({ attemptId, code }).expect(204);
+    });
+
+    it('answers 400 for the fifth wrong code and 429 after it, even for the correct one', async () => {
+      const { email, attemptId, code } = await startLogin();
+      for (let i = 0; i < 5; i++) {
+        await confirm({ attemptId, code: wrongCodeFor(code) }).expect(400);
+      }
+
+      const res = await confirm({ attemptId, code }).expect(429);
+
+      expect(res.body).toMatchObject({ code: 'rate_limit_exceeded' });
+      expect(setCookies(res)).toHaveLength(0);
+      expect((await attemptsOf(email))[0].consumed_reason).toBe(
+        'attempts_exhausted',
+      );
+    });
+
+    it('answers 400 for an expired attempt without counting the entry', async () => {
+      const { attemptId, code } = await startLogin();
+      await age(attemptId, 601);
+
+      await confirm({ attemptId, code }).expect(400);
+
+      const [{ attempts }] = await db.query<{ attempts: number }[]>(
+        `SELECT attempts FROM login_challenges WHERE id = $1`,
+        [attemptId],
+      );
+      expect(attempts).toBe(0);
+    });
+
+    it('answers 400 for the code of a replaced attempt', async () => {
+      const { email, attemptId, code } = await startLogin();
+      await age(attemptId, 61);
+      await login(email).expect(202);
+
+      await confirm({ attemptId, code }).expect(400);
+    });
+
+    it('answers 401 and consumes the attempt as user_inactive for a blocked user', async () => {
+      const { email, attemptId, code } = await startLogin();
+      await db.query(`UPDATE users SET status = 'blocked' WHERE email = $1`, [
+        email,
+      ]);
+
+      const res = await confirm({ attemptId, code }).expect(401);
+
+      expect(res.body).toMatchObject({ code: 'invalid_credentials' });
+      expect(setCookies(res)).toHaveLength(0);
+      expect((await attemptsOf(email))[0].consumed_reason).toBe(
+        'user_inactive',
+      );
+    });
+
+    it('answers 400 for an unknown attempt', async () => {
+      await confirm({ attemptId: randomUUID(), code: '123456' }).expect(400);
+    });
+
+    it('answers 400 for a token sent to an OTP attempt', async () => {
+      const { attemptId } = await startLogin();
+
+      await confirm({ token: `${attemptId}.${'A'.repeat(43)}` }).expect(400);
+    });
+
+    it('answers 400 for an invalid body', async () => {
+      await confirm({ attemptId: 'nope', code: '12' }).expect(400);
+    });
+  });
 });

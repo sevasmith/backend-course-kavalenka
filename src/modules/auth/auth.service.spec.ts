@@ -80,6 +80,12 @@ describe('AuthService', () => {
     consume: jest.Mock;
     secondsUntilResend: jest.Mock;
     buildMagicLinkToken: jest.Mock;
+    findById: jest.Mock;
+    findByIdForUpdate: jest.Mock;
+    registerWrongOtp: jest.Mock;
+    isExpired: jest.Mock;
+    secretMatches: jest.Mock;
+    parseMagicLinkToken: jest.Mock;
   };
   let defaultRoleService: { assignToActivatedUser: jest.Mock };
   let tokenService: { signAccess: jest.Mock; signRefresh: jest.Mock };
@@ -154,6 +160,12 @@ describe('AuthService', () => {
       buildMagicLinkToken: jest.fn(
         (attemptId: string, secret: string) => `${attemptId}.${secret}`,
       ),
+      findById: jest.fn().mockResolvedValue(null),
+      findByIdForUpdate: jest.fn().mockResolvedValue(null),
+      registerWrongOtp: jest.fn(),
+      isExpired: jest.fn().mockReturnValue(false),
+      secretMatches: jest.fn().mockReturnValue(false),
+      parseMagicLinkToken: jest.fn().mockReturnValue(null),
     };
     defaultRoleService = {
       assignToActivatedUser: jest.fn().mockResolvedValue('assigned'),
@@ -1265,6 +1277,288 @@ describe('AuthService', () => {
         expect(usersService.findByEmail).not.toHaveBeenCalled();
         expect(passwordService.verify).not.toHaveBeenCalled();
         expect(passwordService.verifyDummy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('confirmLogin', () => {
+    const attemptId = '3f1c2b9e-8d4a-4c6b-9e1f-2a7d5c8b0e41';
+    const otpDto = { attemptId, code: '654321' };
+    const tokenDto = { token: `${attemptId}.magic-secret` };
+
+    const activeUser: User = {
+      id: 'user-id',
+      email: dto.email,
+      passwordHash: hash,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    let attempt: {
+      id: string;
+      userId: string;
+      method: LoginChallengeMethod;
+      attempts: number;
+      consumedAt: Date | null;
+      consumedReason: LoginChallengeConsumedReason | null;
+    };
+
+    beforeEach(() => {
+      attempt = {
+        id: attemptId,
+        userId: 'user-id',
+        method: LoginChallengeMethod.OTP,
+        attempts: 0,
+        consumedAt: null,
+        consumedReason: null,
+      };
+      loginChallengeService.findById.mockImplementation(() =>
+        Promise.resolve(attempt),
+      );
+      loginChallengeService.findByIdForUpdate.mockImplementation(() =>
+        Promise.resolve(attempt),
+      );
+      usersService.findByIdForUpdate.mockResolvedValue(activeUser);
+      loginChallengeService.secretMatches.mockReturnValue(true);
+    });
+
+    /** The error the service throws, to check its status and body. */
+    const confirmError = async (body: object = otpDto) =>
+      (await service
+        .confirmLogin(body)
+        .catch((e: unknown) => e)) as HttpException;
+
+    const expect400 = async (body: object = otpDto) => {
+      const error = await confirmError(body);
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error.getResponse()).toEqual({
+        code: ErrorCode.BAD_REQUEST,
+        message: 'Invalid or expired confirmation code or token',
+      });
+    };
+
+    describe('success', () => {
+      it('signs both tokens and consumes the attempt as confirmed', async () => {
+        await expect(service.confirmLogin(otpDto)).resolves.toEqual({
+          accessToken: 'access.jwt',
+          refreshToken: 'refresh.jwt',
+        });
+        expect(loginChallengeService.secretMatches).toHaveBeenCalledWith(
+          attempt,
+          '654321',
+        );
+        expect(loginChallengeService.consume).toHaveBeenCalledWith(
+          attempt,
+          LoginChallengeConsumedReason.CONFIRMED,
+        );
+        expect(tokenService.signAccess).toHaveBeenCalledWith('user-id');
+      });
+
+      it('signs the tokens before the attempt is consumed', async () => {
+        await service.confirmLogin(otpDto);
+
+        expect(
+          tokenService.signRefresh.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+          loginChallengeService.consume.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('locks the user before the attempt', async () => {
+        await service.confirmLogin(otpDto);
+
+        expect(usersService.findByIdForUpdate).toHaveBeenCalledWith('user-id');
+        expect(
+          usersService.findByIdForUpdate.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+          loginChallengeService.findByIdForUpdate.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('confirms a magic link by the attemptId inside the token', async () => {
+        attempt.method = LoginChallengeMethod.MAGIC_LINK;
+        loginChallengeService.parseMagicLinkToken.mockReturnValue({
+          attemptId,
+          secret: 'magic-secret',
+        });
+
+        await service.confirmLogin(tokenDto);
+
+        expect(loginChallengeService.findById).toHaveBeenCalledWith(attemptId);
+        expect(loginChallengeService.secretMatches).toHaveBeenCalledWith(
+          attempt,
+          'magic-secret',
+        );
+      });
+
+      it('logs no code, token or secret', async () => {
+        await service.confirmLogin(otpDto);
+        expectLogsWithout('654321', 'access.jwt', 'refresh.jwt');
+      });
+    });
+
+    describe('wrong code or link', () => {
+      beforeEach(() => {
+        loginChallengeService.secretMatches.mockReturnValue(false);
+      });
+
+      it('counts a wrong OTP and answers 400', async () => {
+        loginChallengeService.registerWrongOtp.mockResolvedValue({
+          ...attempt,
+          attempts: 1,
+        });
+
+        await expect400();
+        expect(loginChallengeService.registerWrongOtp).toHaveBeenCalledWith(
+          attempt,
+        );
+        expect(tokenService.signAccess).not.toHaveBeenCalled();
+      });
+
+      it('answers 400 (not 429) for the fifth wrong OTP', async () => {
+        loginChallengeService.registerWrongOtp.mockResolvedValue({
+          ...attempt,
+          attempts: 5,
+          consumedAt: new Date(),
+          consumedReason: LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED,
+        });
+
+        await expect400();
+      });
+
+      it('answers 400 for a wrong link without counting it', async () => {
+        attempt.method = LoginChallengeMethod.MAGIC_LINK;
+        loginChallengeService.parseMagicLinkToken.mockReturnValue({
+          attemptId,
+          secret: 'wrong',
+        });
+
+        await expect400(tokenDto);
+        expect(loginChallengeService.registerWrongOtp).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('rejected before the comparison', () => {
+      it('answers 400 for a token that is not attemptId.secret, without a query', async () => {
+        await expect400({ token: 'garbage' });
+        expect(loginChallengeService.findById).not.toHaveBeenCalled();
+      });
+
+      it('answers 400 for an unknown attempt', async () => {
+        loginChallengeService.findById.mockResolvedValue(null);
+
+        await expect400();
+        expect(usersService.findByIdForUpdate).not.toHaveBeenCalled();
+      });
+
+      it('answers 400 for a code sent to a magic link attempt', async () => {
+        attempt.method = LoginChallengeMethod.MAGIC_LINK;
+
+        await expect400();
+        expect(loginChallengeService.secretMatches).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        LoginChallengeConsumedReason.CONFIRMED,
+        LoginChallengeConsumedReason.REPLACED,
+        LoginChallengeConsumedReason.USER_INACTIVE,
+      ])('answers 400 for an attempt consumed as %s', async (reason) => {
+        attempt.consumedAt = new Date();
+        attempt.consumedReason = reason;
+
+        await expect400();
+        expect(loginChallengeService.secretMatches).not.toHaveBeenCalled();
+      });
+
+      it('answers 429 after five wrong codes, even for the correct code', async () => {
+        attempt.attempts = 5;
+        attempt.consumedAt = new Date();
+        attempt.consumedReason =
+          LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED;
+
+        const error = await confirmError();
+
+        expect(error.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+        expect(error.getResponse()).toMatchObject({
+          code: ErrorCode.RATE_LIMIT_EXCEEDED,
+        });
+        expect(tokenService.signAccess).not.toHaveBeenCalled();
+      });
+
+      it('answers 400 for an expired attempt without counting it', async () => {
+        loginChallengeService.isExpired.mockReturnValue(true);
+        loginChallengeService.secretMatches.mockReturnValue(false);
+
+        await expect400();
+        expect(loginChallengeService.registerWrongOtp).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('user is no longer active', () => {
+      it.each([
+        UserStatus.PENDING,
+        UserStatus.BLOCKED,
+        UserStatus.DELETING,
+        UserStatus.DELETED,
+      ])(
+        'consumes the attempt as user_inactive and answers the login 401 for %s',
+        async (status) => {
+          usersService.findByIdForUpdate.mockResolvedValue({
+            ...activeUser,
+            status,
+          });
+
+          const error = await confirmError();
+
+          expect(error).toBeInstanceOf(UnauthorizedException);
+          expect(error.getResponse()).toEqual({
+            code: ErrorCode.INVALID_CREDENTIALS,
+            message: INVALID_CREDENTIALS_MESSAGE,
+          });
+          expect(loginChallengeService.consume).toHaveBeenCalledWith(
+            attempt,
+            LoginChallengeConsumedReason.USER_INACTIVE,
+          );
+          expect(tokenService.signAccess).not.toHaveBeenCalled();
+        },
+      );
+
+      it('does the same when the user is gone', async () => {
+        usersService.findByIdForUpdate.mockResolvedValue(null);
+
+        await expect(service.confirmLogin(otpDto)).rejects.toBeInstanceOf(
+          UnauthorizedException,
+        );
+        expect(loginChallengeService.consume).toHaveBeenCalledWith(
+          attempt,
+          LoginChallengeConsumedReason.USER_INACTIVE,
+        );
+      });
+    });
+
+    describe('failures', () => {
+      it('answers 503 and does not consume the attempt when signing fails', async () => {
+        tokenService.signAccess.mockImplementation(() => {
+          throw new Error('bad key');
+        });
+
+        const error = await confirmError();
+
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect(loginChallengeService.consume).not.toHaveBeenCalled();
+      });
+
+      it('answers 503 when the database fails', async () => {
+        loginChallengeService.findById.mockRejectedValue(new Error('db down'));
+
+        const error = await confirmError();
+
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect(error.getResponse()).toEqual({
+          code: ErrorCode.SERVICE_UNAVAILABLE,
+          message: 'Login is temporarily unavailable',
+        });
       });
     });
   });

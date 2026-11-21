@@ -80,3 +80,32 @@ export interface LoginConfirmationRequired {
 
 /** Direct login gives the token pair; the email step gives the 202 body. */
 export type LoginResult = AuthTokens | LoginConfirmationRequired;
+
+/**
+ * Why a login confirmation failed. Only for the log: the client gets the
+ * shared 400, the 401 of login (`user_inactive`) or a 429
+ * (`attempts_exhausted`).
+ */
+export type LoginConfirmationFailureReason =
+  | 'not_found'
+  | 'wrong_method'
+  | 'consumed'
+  | 'expired'
+  | 'attempts_exhausted'
+  | 'user_inactive'
+  | 'wrong_secret';
+
+/**
+ * What the confirmation transaction decided. It is returned, not thrown:
+ * a throw inside the transaction would roll back the wrong-code counter and
+ * the `user_inactive` consumption.
+ */
+export type LoginConfirmationOutcome =
+  | { confirmed: true; attemptId: string; userId: string; tokens: AuthTokens }
+  | {
+      confirmed: false;
+      reason: LoginConfirmationFailureReason;
+      attemptId?: string;
+      userId?: string;
+      attempts?: number;
+    };

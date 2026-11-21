@@ -222,6 +222,51 @@ describe('LoginChallengeService', () => {
       });
     });
 
+    it('finds an attempt by id without a lock', async () => {
+      await service.findById(attemptId);
+
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { id: attemptId },
+      });
+    });
+
+    it('finds and locks an attempt by id', async () => {
+      await service.findByIdForUpdate(attemptId);
+
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { id: attemptId },
+        lock: { mode: 'pessimistic_write' },
+      });
+    });
+
+    it('counts a wrong OTP and keeps the attempt open below five', async () => {
+      const updated = await service.registerWrongOtp(
+        challengeWith({ attempts: 3 }),
+      );
+
+      expect(repository.update).toHaveBeenCalledWith(attemptId, {
+        attempts: 4,
+        consumedAt: null,
+        consumedReason: null,
+      });
+      expect(updated.attempts).toBe(4);
+    });
+
+    it('consumes the attempt as attempts_exhausted on the fifth wrong OTP', async () => {
+      const updated = await service.registerWrongOtp(
+        challengeWith({ attempts: 4 }),
+      );
+
+      expect(repository.update).toHaveBeenCalledWith(attemptId, {
+        attempts: 5,
+        consumedAt: expect.any(Date) as Date,
+        consumedReason: LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED,
+      });
+      expect(updated.consumedReason).toBe(
+        LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED,
+      );
+    });
+
     it('consumes an attempt with a reason', async () => {
       await service.consume(
         challengeWith({}),

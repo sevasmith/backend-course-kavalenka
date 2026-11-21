@@ -17,6 +17,7 @@ import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import { LoginDto } from './dto/login.dto';
+import { ConfirmLoginDto } from './dto/confirm-login.dto';
 import { setAuthCookies } from './auth-cookies';
 import { AuthService } from './auth.service';
 import {
@@ -106,5 +107,26 @@ export class AuthController {
     }
 
     setAuthCookies(reply, result.accessToken, result.refreshToken);
+  }
+
+  /**
+   * Second login step, OTP (`{ attemptId, code }`) or magic link
+   * (`{ token }`): 204 with both cookies and no body.
+   *
+   * 400 for any invalid attempt (unknown, expired, consumed, wrong code or
+   * link; the fifth wrong code too), 429 once five wrong codes consumed it,
+   * 401 `invalid_credentials` if the user is no longer active, 503 (no
+   * cookies) if signing or the database fails.
+   */
+  @Post('login/confirm')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async confirmLogin(
+    @Body() dto: ConfirmLoginDto,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<void> {
+    const { accessToken, refreshToken } =
+      await this.authService.confirmLogin(dto);
+    setAuthCookies(reply, accessToken, refreshToken);
   }
 }

@@ -29,6 +29,7 @@ describe('AuthController', () => {
     confirmRegistration: jest.Mock;
     resendRegistration: jest.Mock;
     login: jest.Mock;
+    confirmLogin: jest.Mock;
   };
   let reply: { status: jest.Mock; setCookie: jest.Mock };
 
@@ -38,6 +39,7 @@ describe('AuthController', () => {
       confirmRegistration: jest.fn(),
       resendRegistration: jest.fn(),
       login: jest.fn(),
+      confirmLogin: jest.fn(),
     };
     reply = { status: jest.fn(), setCookie: jest.fn() };
 
@@ -203,6 +205,55 @@ describe('AuthController', () => {
         expect(reply.setCookie).not.toHaveBeenCalled();
       },
     );
+  });
+
+  describe('confirmLogin', () => {
+    const body = {
+      attemptId: '3f1c2b9e-8d4a-4c6b-9e1f-2a7d5c8b0e41',
+      code: '123456',
+    };
+    const confirm = () =>
+      controller.confirmLogin(body, reply as unknown as FastifyReply);
+
+    it('answers 204 and sets both cookies, with no body', async () => {
+      authService.confirmLogin.mockResolvedValue({
+        accessToken: 'access.jwt',
+        refreshToken: 'refresh.jwt',
+      });
+
+      await expect(confirm()).resolves.toBeUndefined();
+      expect(authService.confirmLogin).toHaveBeenCalledWith(body);
+      expect(reply.setCookie).toHaveBeenCalledWith(
+        ACCESS_TOKEN_COOKIE,
+        'access.jwt',
+        expect.any(Object),
+      );
+      expect(reply.setCookie).toHaveBeenCalledWith(
+        REFRESH_TOKEN_COOKIE,
+        'refresh.jwt',
+        expect.any(Object),
+      );
+      expect(
+        Reflect.getMetadata(HTTP_CODE_METADATA, handler('confirmLogin')),
+      ).toBe(HttpStatus.NO_CONTENT);
+    });
+
+    it('is public: the user has no session yet', () => {
+      expect(Reflect.getMetadata(IS_PUBLIC_KEY, handler('confirmLogin'))).toBe(
+        true,
+      );
+    });
+
+    it.each([
+      new BadRequestException(),
+      new UnauthorizedException(),
+      new ServiceUnavailableException(),
+    ])('sets no cookies when the service throws %p', async (error) => {
+      authService.confirmLogin.mockRejectedValue(error);
+
+      await expect(confirm()).rejects.toBe(error);
+      expect(reply.setCookie).not.toHaveBeenCalled();
+    });
   });
 
   describe('login rate limit', () => {

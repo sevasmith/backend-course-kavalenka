@@ -19,11 +19,13 @@ import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import { LoginDto } from './dto/login.dto';
+import { ConfirmLoginDto } from './dto/confirm-login.dto';
 import {
   AuthTokens,
   ConfirmationOutcome,
   ConfirmRegistrationResult,
   INVALID_CREDENTIALS_MESSAGE,
+  LoginConfirmationOutcome,
   LoginConfirmationRequired,
   LoginResult,
   LoginUser,
@@ -40,6 +42,9 @@ import { LoginChallengeService } from './login-challenge.service';
 import { LoginChallenge } from './login-challenge.entity';
 import {
   CreatedLoginChallenge,
+  INVALID_LOGIN_CONFIRMATION_MESSAGE,
+  LOGIN_ATTEMPTS_EXHAUSTED_MESSAGE,
+  LOGIN_CHALLENGE_MAX_ATTEMPTS,
   LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
   LOGIN_CHALLENGE_TTL_SECONDS,
   LOGIN_EMAIL_TOO_SOON_MESSAGE,
@@ -373,6 +378,189 @@ export class AuthService {
         ),
       );
     }
+  }
+
+  /**
+   * `POST /auth/login/confirm`. The checks and writes run in
+   * `applyLoginConfirmation` (one transaction); this method turns its outcome
+   * into a response only after the commit, so the wrong-code counter and the
+   * `user_inactive` consumption are saved even though the client gets an error.
+   *
+   * The tokens are returned only after the commit: if the commit fails, no
+   * cookies are set and the attempt (rolled back) can be confirmed again.
+   */
+  async confirmLogin(dto: ConfirmLoginDto): Promise<AuthTokens> {
+    let outcome: LoginConfirmationOutcome;
+    try {
+      outcome = await this.applyLoginConfirmation(dto);
+    } catch (error) {
+      // The 503 of a failed signature is already an answer.
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      this.logger.error(
+        `Login confirmation failed, reason=database: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
+
+    if (outcome.confirmed) {
+      this.logger.log(
+        `Login confirmed, attemptId=${outcome.attemptId}, userId=${outcome.userId}`,
+      );
+      return outcome.tokens;
+    }
+
+    const { reason, attemptId, userId, attempts } = outcome;
+    this.logger.warn(
+      `Login confirmation rejected, reason=${reason}, ` +
+        `attemptId=${attemptId ?? 'unknown'}, userId=${userId ?? 'unknown'}` +
+        (attempts !== undefined
+          ? `, attempts=${attempts}/${LOGIN_CHALLENGE_MAX_ATTEMPTS}`
+          : ''),
+    );
+
+    if (reason === 'attempts_exhausted') {
+      throw new HttpException(
+        apiError(
+          ErrorCode.RATE_LIMIT_EXCEEDED,
+          LOGIN_ATTEMPTS_EXHAUSTED_MESSAGE,
+        ),
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    if (reason === 'user_inactive') {
+      throw new UnauthorizedException(
+        apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+      );
+    }
+    throw new BadRequestException(
+      apiError(ErrorCode.BAD_REQUEST, INVALID_LOGIN_CONFIRMATION_MESSAGE),
+    );
+  }
+
+  /**
+   * One transaction, in the order of 1.2 §1.3.2:
+   * 1. Read the attempt without a lock, only to learn `user_id`.
+   * 2. Lock the user, then the attempt (the order of every login-attempt
+   *    transaction, so they never deadlock), and re-read the attempt: a
+   *    parallel request may have changed it while we waited.
+   * 3. Consumed (429 for `attempts_exhausted`, else 400) and expired (400,
+   *    no counter) are rejected before the user and the secret are checked.
+   * 4. A user who is gone or not `active` consumes it as `user_inactive`.
+   * 5. Only then the secret: a wrong OTP is counted, a wrong link is not.
+   * 6. On a match, sign both tokens first (a failure throws and rolls back),
+   *    then consume the attempt as `confirmed`.
+   *
+   * The method comes from the saved attempt, not from the config.
+   */
+  @Transactional()
+  private async applyLoginConfirmation(
+    dto: ConfirmLoginDto,
+  ): Promise<LoginConfirmationOutcome> {
+    const target = this.parseLoginConfirmation(dto);
+    if (!target) {
+      return { confirmed: false, reason: 'not_found' };
+    }
+
+    const found = await this.loginChallengeService.findById(target.attemptId);
+    if (!found) {
+      return {
+        confirmed: false,
+        reason: 'not_found',
+        attemptId: target.attemptId,
+      };
+    }
+
+    const userId = found.userId;
+    const user = await this.usersService.findByIdForUpdate(userId);
+    const challenge = await this.loginChallengeService.findByIdForUpdate(
+      found.id,
+    );
+    if (!challenge) {
+      return { confirmed: false, reason: 'not_found', attemptId: found.id };
+    }
+
+    const attemptId = challenge.id;
+
+    // A code sent for a magic link attempt (or a token for an OTP one).
+    if (challenge.method !== target.method) {
+      return { confirmed: false, reason: 'wrong_method', attemptId, userId };
+    }
+
+    if (challenge.consumedAt !== null) {
+      const reason =
+        challenge.consumedReason ===
+        LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED
+          ? 'attempts_exhausted'
+          : 'consumed';
+      return { confirmed: false, reason, attemptId, userId };
+    }
+
+    // `last_sent_at + 10 min`. Rejected without counting an entry.
+    if (this.loginChallengeService.isExpired(challenge)) {
+      return { confirmed: false, reason: 'expired', attemptId, userId };
+    }
+
+    // Blocked or deleted after the password check: the attempt can never
+    // succeed, so it is closed for good.
+    if (user?.status !== UserStatus.ACTIVE) {
+      await this.loginChallengeService.consume(
+        challenge,
+        LoginChallengeConsumedReason.USER_INACTIVE,
+      );
+      return { confirmed: false, reason: 'user_inactive', attemptId, userId };
+    }
+
+    if (!this.loginChallengeService.secretMatches(challenge, target.secret)) {
+      // A 6-digit code can be guessed, so it is counted; 32 random bytes
+      // cannot, so a wrong link is not.
+      if (challenge.method === LoginChallengeMethod.OTP) {
+        const { attempts } =
+          await this.loginChallengeService.registerWrongOtp(challenge);
+        return {
+          confirmed: false,
+          reason: 'wrong_secret',
+          attemptId,
+          userId,
+          attempts,
+        };
+      }
+      return { confirmed: false, reason: 'wrong_secret', attemptId, userId };
+    }
+
+    const tokens = this.signTokens(userId);
+    await this.loginChallengeService.consume(
+      challenge,
+      LoginChallengeConsumedReason.CONFIRMED,
+    );
+    return { confirmed: true, attemptId, userId, tokens };
+  }
+
+  /**
+   * Which attempt, which secret and which method the body is for. Null for a
+   * token that is not `attemptId.secret`: the same 400 as an unknown attempt,
+   * without a database query.
+   */
+  private parseLoginConfirmation(dto: ConfirmLoginDto): {
+    attemptId: string;
+    secret: string;
+    method: LoginChallengeMethod;
+  } | null {
+    if (dto.token !== undefined) {
+      const parsed = this.loginChallengeService.parseMagicLinkToken(dto.token);
+      return parsed && { ...parsed, method: LoginChallengeMethod.MAGIC_LINK };
+    }
+    return {
+      attemptId: dto.attemptId!,
+      secret: dto.code!,
+      method: LoginChallengeMethod.OTP,
+    };
   }
 
   /**
