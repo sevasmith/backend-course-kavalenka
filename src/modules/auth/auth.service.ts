@@ -20,6 +20,7 @@ import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import { LoginDto } from './dto/login.dto';
 import { ConfirmLoginDto } from './dto/confirm-login.dto';
+import { ResendLoginDto } from './dto/resend-login.dto';
 import {
   AuthTokens,
   ConfirmationOutcome,
@@ -27,6 +28,8 @@ import {
   INVALID_CREDENTIALS_MESSAGE,
   LoginConfirmationOutcome,
   LoginConfirmationRequired,
+  LoginResendOutcome,
+  LoginResendResult,
   LoginResult,
   LoginUser,
   RegisterPendingResult,
@@ -278,7 +281,10 @@ export class AuthService {
    */
   private async sendLoginEmail(
     email: string,
-    { method, attemptId }: LoginConfirmationRequired,
+    {
+      method,
+      attemptId,
+    }: Pick<LoginConfirmationRequired, 'method' | 'attemptId'>,
     secret: string,
   ): Promise<void> {
     try {
@@ -561,6 +567,153 @@ export class AuthService {
       secret: dto.code!,
       method: LoginChallengeMethod.OTP,
     };
+  }
+
+  /**
+   * `POST /auth/login/resend`. The checks and the new secret are committed
+   * in `applyLoginResend`; the email goes out only after the commit. If SMTP
+   * fails, the new hash stays (the old secret is not restored) and the next
+   * resend is possible after 60 seconds.
+   */
+  async resendLogin(dto: ResendLoginDto): Promise<LoginResendResult> {
+    let outcome: LoginResendOutcome;
+    try {
+      outcome = await this.applyLoginResend(dto.attemptId);
+    } catch (error) {
+      this.logger.error(
+        `Login resend failed, reason=database, attemptId=${dto.attemptId}: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
+
+    if (!outcome.resent) {
+      this.rejectLoginResend(outcome);
+    }
+
+    const { challenge, secret, email } = outcome;
+    this.logger.log(
+      `Login attempt resent, method=${challenge.method}, attemptId=${challenge.id}, userId=${challenge.userId}`,
+    );
+    await this.sendLoginEmail(
+      email,
+      { method: challenge.method, attemptId: challenge.id },
+      secret,
+    );
+
+    return {
+      method: challenge.method,
+      attemptId: challenge.id,
+      expiresInSeconds: LOGIN_CHALLENGE_TTL_SECONDS,
+      resendAfterSeconds: LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
+    };
+  }
+
+  /**
+   * One transaction, in the order of 1.2 §1.3.2 (resend):
+   * 1. Read the attempt without a lock, only to learn `user_id`.
+   * 2. Lock the user, then the attempt, and re-read it.
+   * 3. Consumed: 429 for `attempts_exhausted`, else 400. An expired TTL is
+   *    fine: resend is how an expired attempt gets a new secret.
+   * 4. A user who is gone or not `active` consumes it as `user_inactive`.
+   * 5. The 60-second pause, counted from `last_sent_at`.
+   * 6. A new secret of the saved method in the same row.
+   */
+  @Transactional()
+  private async applyLoginResend(
+    attemptId: string,
+  ): Promise<LoginResendOutcome> {
+    const found = await this.loginChallengeService.findById(attemptId);
+    if (!found) {
+      return { resent: false, reason: 'not_found', attemptId };
+    }
+
+    const userId = found.userId;
+    const user = await this.usersService.findByIdForUpdate(userId);
+    const challenge =
+      await this.loginChallengeService.findByIdForUpdate(attemptId);
+    if (!challenge) {
+      return { resent: false, reason: 'not_found', attemptId };
+    }
+
+    if (challenge.consumedAt !== null) {
+      const reason =
+        challenge.consumedReason ===
+        LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED
+          ? 'attempts_exhausted'
+          : 'consumed';
+      return { resent: false, reason, attemptId, userId };
+    }
+
+    if (user?.status !== UserStatus.ACTIVE) {
+      await this.loginChallengeService.consume(
+        challenge,
+        LoginChallengeConsumedReason.USER_INACTIVE,
+      );
+      return { resent: false, reason: 'user_inactive', attemptId, userId };
+    }
+
+    const retryAfterSeconds =
+      this.loginChallengeService.secondsUntilResend(challenge);
+    if (retryAfterSeconds > 0) {
+      return {
+        resent: false,
+        reason: 'too_soon',
+        attemptId,
+        userId,
+        retryAfterSeconds,
+      };
+    }
+
+    const { challenge: rotated, secret } =
+      await this.loginChallengeService.rotateSecret(challenge);
+    return { resent: true, challenge: rotated, secret, email: user.email };
+  }
+
+  /** Logs the reason and throws the response for a rejected resend. */
+  private rejectLoginResend(
+    outcome: Extract<LoginResendOutcome, { resent: false }>,
+  ): never {
+    const { reason, attemptId, userId, retryAfterSeconds } = outcome;
+    this.logger.warn(
+      `Login resend rejected, reason=${reason}, attemptId=${attemptId}, ` +
+        `userId=${userId ?? 'unknown'}` +
+        (retryAfterSeconds !== undefined
+          ? `, retryAfterSeconds=${retryAfterSeconds}`
+          : ''),
+    );
+
+    switch (reason) {
+      case 'too_soon':
+        throw new HttpException(
+          apiError(
+            ErrorCode.RATE_LIMIT_EXCEEDED,
+            LOGIN_EMAIL_TOO_SOON_MESSAGE,
+            { retryAfterSeconds: retryAfterSeconds! },
+          ),
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      case 'attempts_exhausted':
+        throw new HttpException(
+          apiError(
+            ErrorCode.RATE_LIMIT_EXCEEDED,
+            LOGIN_ATTEMPTS_EXHAUSTED_MESSAGE,
+          ),
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      case 'user_inactive':
+        throw new UnauthorizedException(
+          apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+        );
+      default:
+        throw new BadRequestException(
+          apiError(ErrorCode.BAD_REQUEST, INVALID_LOGIN_CONFIRMATION_MESSAGE),
+        );
+    }
   }
 
   /**

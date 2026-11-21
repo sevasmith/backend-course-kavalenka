@@ -1,6 +1,7 @@
 import { UserStatus } from '@/modules/users/user.types';
 import { RegistrationChallengeMethod } from './registration-challenge.types';
 import { LoginChallengeMethod } from './login-challenge.types';
+import type { LoginChallenge } from './login-challenge.entity';
 
 export interface RegisterResult {
   id: string;
@@ -108,4 +109,49 @@ export type LoginConfirmationOutcome =
       attemptId?: string;
       userId?: string;
       attempts?: number;
+    };
+
+/**
+ * The 202 body of `POST /auth/login/resend` (1.2 lists it without
+ * `confirmationRequired`). The attempt id stays the same: resend updates the
+ * attempt instead of creating a new one.
+ */
+export interface LoginResendResult {
+  method: LoginChallengeMethod;
+  attemptId: string;
+  expiresInSeconds: number;
+  resendAfterSeconds: number;
+}
+
+/**
+ * Why a resend was rejected. Only for the log: the client gets the shared
+ * 400, a 429 (`attempts_exhausted`, `too_soon`) or the login 401
+ * (`user_inactive`).
+ */
+export type LoginResendFailureReason =
+  | 'not_found'
+  | 'consumed'
+  | 'attempts_exhausted'
+  | 'user_inactive'
+  | 'too_soon';
+
+/**
+ * What the resend transaction decided. Returned, not thrown: a throw would
+ * roll back the `user_inactive` consumption.
+ */
+export type LoginResendOutcome =
+  | {
+      resent: true;
+      challenge: LoginChallenge;
+      /** Only for the email; never logged or returned. */
+      secret: string;
+      /** The user's address, read under the lock; never logged. */
+      email: string;
+    }
+  | {
+      resent: false;
+      reason: LoginResendFailureReason;
+      attemptId: string;
+      userId?: string;
+      retryAfterSeconds?: number;
     };

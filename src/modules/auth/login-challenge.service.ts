@@ -135,6 +135,26 @@ export class LoginChallengeService {
     return { challenge, secret };
   }
 
+  /**
+   * Resend: a new secret of the same method in the same row. `secret_hash`
+   * is replaced (the old code or link stops working), `last_sent_at` restarts
+   * the TTL and the pause, and the OTP counter goes back to 0. The row is
+   * locked by the caller.
+   */
+  async rotateSecret(
+    challenge: LoginChallenge,
+  ): Promise<CreatedLoginChallenge> {
+    const secret = this.generateSecret(challenge.method);
+    const changes = {
+      secretHash: this.hashSecret(secret),
+      lastSentAt: new Date(),
+      attempts: 0,
+    };
+
+    await this.challengesRepository.update(challenge.id, changes);
+    return { challenge: { ...challenge, ...changes }, secret };
+  }
+
   async consume(
     challenge: LoginChallenge,
     reason: LoginChallengeConsumedReason,

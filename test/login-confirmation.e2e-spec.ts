@@ -292,4 +292,121 @@ describe('Login with email confirmation (e2e)', () => {
       await confirm({ attemptId: 'nope', code: '12' }).expect(400);
     });
   });
+
+  describe('POST /auth/login/resend', () => {
+    const resend = (attemptId: string) =>
+      http().post('/auth/login/resend').send({ attemptId });
+    const confirm = (body: object) =>
+      http().post('/auth/login/confirm').send(body);
+
+    const startLogin = async () => {
+      const email = await createUser();
+      const res = await login(email).expect(202);
+      const { attemptId } = res.body as { attemptId: string };
+      return { email, attemptId, code: mail.lastSecret(email) };
+    };
+
+    it('answers 429 with the remaining seconds within 60 seconds', async () => {
+      const { attemptId } = await startLogin();
+
+      const res = await resend(attemptId).expect(429);
+
+      const { retryAfterSeconds } = res.body as { retryAfterSeconds: number };
+      expect(retryAfterSeconds).toBeGreaterThan(0);
+      expect(retryAfterSeconds).toBeLessThanOrEqual(60);
+    });
+
+    it('after 60 seconds sends a new code for the same attempt; the old one stops working', async () => {
+      const { email, attemptId, code: oldCode } = await startLogin();
+      // A wrong entry, to check that resend resets the counter.
+      await confirm({
+        attemptId,
+        code: oldCode === '000000' ? '111111' : '000000',
+      }).expect(400);
+      await age(attemptId, 61);
+
+      const res = await resend(attemptId).expect(202);
+
+      expect(res.body).toEqual({
+        method: 'otp',
+        attemptId,
+        expiresInSeconds: 600,
+        resendAfterSeconds: 60,
+      });
+      const [row] = await db.query<{ attempts: number }[]>(
+        `SELECT attempts FROM login_challenges WHERE id = $1`,
+        [attemptId],
+      );
+      expect(row.attempts).toBe(0);
+      expect(await attemptsOf(email)).toHaveLength(1);
+
+      const newCode = mail.lastSecret(email);
+      if (newCode !== oldCode) {
+        await confirm({ attemptId, code: oldCode }).expect(400);
+      }
+      await confirm({ attemptId, code: newCode }).expect(204);
+    });
+
+    it('resends an expired attempt, which can then be confirmed', async () => {
+      const { email, attemptId } = await startLogin();
+      await age(attemptId, 601);
+
+      await resend(attemptId).expect(202);
+
+      await confirm({ attemptId, code: mail.lastSecret(email) }).expect(204);
+    });
+
+    it('answers 400 for a confirmed attempt', async () => {
+      const { attemptId, code } = await startLogin();
+      await confirm({ attemptId, code }).expect(204);
+      await age(attemptId, 61);
+
+      await resend(attemptId).expect(400);
+    });
+
+    it('answers 429 for an attempt exhausted by five wrong codes', async () => {
+      const { attemptId, code } = await startLogin();
+      for (let i = 0; i < 5; i++) {
+        await confirm({
+          attemptId,
+          code: code === '000000' ? '111111' : '000000',
+        }).expect(400);
+      }
+      await age(attemptId, 61);
+
+      await resend(attemptId).expect(429);
+    });
+
+    it('answers 401 and consumes the attempt for a blocked user', async () => {
+      const { email, attemptId } = await startLogin();
+      await age(attemptId, 61);
+      await db.query(`UPDATE users SET status = 'blocked' WHERE email = $1`, [
+        email,
+      ]);
+
+      await resend(attemptId).expect(401);
+
+      expect((await attemptsOf(email))[0].consumed_reason).toBe(
+        'user_inactive',
+      );
+    });
+
+    it('keeps the new hash and answers 503 when SMTP fails', async () => {
+      const { email, attemptId } = await startLogin();
+      const [before] = await attemptsOf(email);
+      await age(attemptId, 61);
+      mail.fail();
+
+      await resend(attemptId).expect(503);
+
+      const [after] = await attemptsOf(email);
+      expect(after.secret_hash).not.toBe(before.secret_hash);
+      expect(after.consumed_at).toBeNull();
+    });
+
+    it('answers 400 for an unknown attempt and for an invalid body', async () => {
+      await resend(randomUUID()).expect(400);
+      await resend('not-a-uuid').expect(400);
+    });
+  });
 });

@@ -267,6 +267,30 @@ describe('LoginChallengeService', () => {
       );
     });
 
+    it('rotates the secret in the same row and resets the counter', async () => {
+      const lastSentAt = new Date('2026-11-21T10:00:00.000Z');
+      const { challenge, secret } = await service.rotateSecret(
+        challengeWith({
+          method: LoginChallengeMethod.OTP,
+          secretHash: hmac('111111'),
+          attempts: 3,
+          lastSentAt,
+        }),
+      );
+
+      expect(repository.update).toHaveBeenCalledWith(attemptId, {
+        secretHash: hmac(secret),
+        lastSentAt: expect.any(Date) as Date,
+        attempts: 0,
+      });
+      expect(secret).toMatch(/^\d{6}$/);
+      expect(challenge).toMatchObject({ id: attemptId, attempts: 0 });
+      expect(challenge.lastSentAt.getTime()).toBeGreaterThan(
+        lastSentAt.getTime(),
+      );
+      expect(repository.save).not.toHaveBeenCalled();
+    });
+
     it('consumes an attempt with a reason', async () => {
       await service.consume(
         challengeWith({}),

@@ -86,6 +86,7 @@ describe('AuthService', () => {
     isExpired: jest.Mock;
     secretMatches: jest.Mock;
     parseMagicLinkToken: jest.Mock;
+    rotateSecret: jest.Mock;
   };
   let defaultRoleService: { assignToActivatedUser: jest.Mock };
   let tokenService: { signAccess: jest.Mock; signRefresh: jest.Mock };
@@ -166,6 +167,7 @@ describe('AuthService', () => {
       isExpired: jest.fn().mockReturnValue(false),
       secretMatches: jest.fn().mockReturnValue(false),
       parseMagicLinkToken: jest.fn().mockReturnValue(null),
+      rotateSecret: jest.fn(),
     };
     defaultRoleService = {
       assignToActivatedUser: jest.fn().mockResolvedValue('assigned'),
@@ -1559,6 +1561,208 @@ describe('AuthService', () => {
           code: ErrorCode.SERVICE_UNAVAILABLE,
           message: 'Login is temporarily unavailable',
         });
+      });
+    });
+  });
+
+  describe('resendLogin', () => {
+    const attemptId = '3f1c2b9e-8d4a-4c6b-9e1f-2a7d5c8b0e41';
+    const resendDto = { attemptId };
+
+    const activeUser: User = {
+      id: 'user-id',
+      email: dto.email,
+      passwordHash: hash,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    let attempt: {
+      id: string;
+      userId: string;
+      method: LoginChallengeMethod;
+      attempts: number;
+      consumedAt: Date | null;
+      consumedReason: LoginChallengeConsumedReason | null;
+    };
+
+    beforeEach(() => {
+      attempt = {
+        id: attemptId,
+        userId: 'user-id',
+        method: LoginChallengeMethod.OTP,
+        attempts: 3,
+        consumedAt: null,
+        consumedReason: null,
+      };
+      loginChallengeService.findById.mockImplementation(() =>
+        Promise.resolve(attempt),
+      );
+      loginChallengeService.findByIdForUpdate.mockImplementation(() =>
+        Promise.resolve(attempt),
+      );
+      loginChallengeService.rotateSecret.mockImplementation(() =>
+        Promise.resolve({
+          challenge: { ...attempt, attempts: 0 },
+          secret: '777888',
+        }),
+      );
+      usersService.findByIdForUpdate.mockResolvedValue(activeUser);
+    });
+
+    const resendError = async () =>
+      (await service
+        .resendLogin(resendDto)
+        .catch((e: unknown) => e)) as HttpException;
+
+    describe('success', () => {
+      it('returns the 202 body with the same attemptId', async () => {
+        await expect(service.resendLogin(resendDto)).resolves.toEqual({
+          method: LoginChallengeMethod.OTP,
+          attemptId,
+          expiresInSeconds: 600,
+          resendAfterSeconds: 60,
+        });
+        expect(loginChallengeService.rotateSecret).toHaveBeenCalledWith(
+          attempt,
+        );
+        expect(loginChallengeService.create).not.toHaveBeenCalled();
+      });
+
+      it('locks the user before the attempt', async () => {
+        await service.resendLogin(resendDto);
+
+        expect(
+          usersService.findByIdForUpdate.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+          loginChallengeService.findByIdForUpdate.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('sends the new OTP to the user after the new secret is saved, logging no secret', async () => {
+        await service.resendLogin(resendDto);
+
+        expect(mailService.sendLoginOtp).toHaveBeenCalledWith(
+          dto.email,
+          '777888',
+        );
+        expect(
+          loginChallengeService.rotateSecret.mock.invocationCallOrder[0],
+        ).toBeLessThan(mailService.sendLoginOtp.mock.invocationCallOrder[0]);
+        expectLogsWithout('777888');
+      });
+
+      it('keeps the method of the attempt, whatever the config says', async () => {
+        attempt.method = LoginChallengeMethod.MAGIC_LINK;
+        config.get.mockImplementation((key: string) =>
+          key === 'LOGIN_CONFIRM_URL'
+            ? 'http://localhost:3000/login/confirm'
+            : 'otp',
+        );
+
+        await service.resendLogin(resendDto);
+
+        expect(mailService.sendLoginMagicLink).toHaveBeenCalledWith(
+          dto.email,
+          `http://localhost:3000/login/confirm#${attemptId}.777888`,
+        );
+        expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+      });
+
+      it('resends an expired attempt (the TTL does not block a resend)', async () => {
+        loginChallengeService.isExpired.mockReturnValue(true);
+
+        await expect(service.resendLogin(resendDto)).resolves.toMatchObject({
+          attemptId,
+        });
+      });
+    });
+
+    describe('rejected', () => {
+      it('answers 400 for an unknown attempt', async () => {
+        loginChallengeService.findById.mockResolvedValue(null);
+
+        const error = await resendError();
+
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect(usersService.findByIdForUpdate).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        LoginChallengeConsumedReason.CONFIRMED,
+        LoginChallengeConsumedReason.REPLACED,
+        LoginChallengeConsumedReason.USER_INACTIVE,
+      ])('answers 400 for an attempt consumed as %s', async (reason) => {
+        attempt.consumedAt = new Date();
+        attempt.consumedReason = reason;
+
+        expect(await resendError()).toBeInstanceOf(BadRequestException);
+        expect(loginChallengeService.rotateSecret).not.toHaveBeenCalled();
+      });
+
+      it('answers 429 for an attempt exhausted by five wrong codes', async () => {
+        attempt.consumedAt = new Date();
+        attempt.consumedReason =
+          LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED;
+
+        const error = await resendError();
+
+        expect(error.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+        expect(loginChallengeService.rotateSecret).not.toHaveBeenCalled();
+      });
+
+      it('answers 429 with the remaining seconds within 60 seconds', async () => {
+        loginChallengeService.secondsUntilResend.mockReturnValue(17);
+
+        const error = await resendError();
+
+        expect(error.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+        expect(error.getResponse()).toMatchObject({
+          code: ErrorCode.RATE_LIMIT_EXCEEDED,
+          details: { retryAfterSeconds: 17 },
+        });
+        expect(loginChallengeService.rotateSecret).not.toHaveBeenCalled();
+        expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+      });
+
+      it.each([UserStatus.BLOCKED, UserStatus.DELETING, UserStatus.DELETED])(
+        'consumes the attempt as user_inactive and answers 401 for %s',
+        async (status) => {
+          usersService.findByIdForUpdate.mockResolvedValue({
+            ...activeUser,
+            status,
+          });
+
+          const error = await resendError();
+
+          expect(error).toBeInstanceOf(UnauthorizedException);
+          expect(loginChallengeService.consume).toHaveBeenCalledWith(
+            attempt,
+            LoginChallengeConsumedReason.USER_INACTIVE,
+          );
+          expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+        },
+      );
+    });
+
+    describe('failures', () => {
+      it('answers 503 when the database fails, without an email', async () => {
+        loginChallengeService.rotateSecret.mockRejectedValue(
+          new Error('db down'),
+        );
+
+        expect(await resendError()).toBeInstanceOf(ServiceUnavailableException);
+        expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+      });
+
+      it('answers 503 when SMTP fails, without the secret', async () => {
+        mailService.sendLoginOtp.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        const error = await resendError();
+
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect(JSON.stringify(error.getResponse())).not.toContain('777888');
       });
     });
   });

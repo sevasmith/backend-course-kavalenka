@@ -30,6 +30,7 @@ describe('AuthController', () => {
     resendRegistration: jest.Mock;
     login: jest.Mock;
     confirmLogin: jest.Mock;
+    resendLogin: jest.Mock;
   };
   let reply: { status: jest.Mock; setCookie: jest.Mock };
 
@@ -40,6 +41,7 @@ describe('AuthController', () => {
       resendRegistration: jest.fn(),
       login: jest.fn(),
       confirmLogin: jest.fn(),
+      resendLogin: jest.fn(),
     };
     reply = { status: jest.fn(), setCookie: jest.fn() };
 
@@ -253,6 +255,33 @@ describe('AuthController', () => {
 
       await expect(confirm()).rejects.toBe(error);
       expect(reply.setCookie).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resendLogin', () => {
+    const body = { attemptId: '3f1c2b9e-8d4a-4c6b-9e1f-2a7d5c8b0e41' };
+
+    it('answers 202 with the service result and sets no cookies', async () => {
+      const result = {
+        method: 'otp',
+        attemptId: body.attemptId,
+        expiresInSeconds: 600,
+        resendAfterSeconds: 60,
+      };
+      authService.resendLogin.mockResolvedValue(result);
+
+      await expect(controller.resendLogin(body)).resolves.toBe(result);
+      expect(authService.resendLogin).toHaveBeenCalledWith(body);
+      expect(
+        Reflect.getMetadata(HTTP_CODE_METADATA, handler('resendLogin')),
+      ).toBe(HttpStatus.ACCEPTED);
+      expect(reply.setCookie).not.toHaveBeenCalled();
+    });
+
+    it('is public: the user has no session yet', () => {
+      expect(Reflect.getMetadata(IS_PUBLIC_KEY, handler('resendLogin'))).toBe(
+        true,
+      );
     });
   });
 

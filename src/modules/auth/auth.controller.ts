@@ -18,11 +18,13 @@ import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import { LoginDto } from './dto/login.dto';
 import { ConfirmLoginDto } from './dto/confirm-login.dto';
+import { ResendLoginDto } from './dto/resend-login.dto';
 import { setAuthCookies } from './auth-cookies';
 import { AuthService } from './auth.service';
 import {
   ConfirmRegistrationResult,
   LoginConfirmationRequired,
+  LoginResendResult,
   RegisterPendingResult,
   RegisterResult,
 } from './auth.types';
@@ -128,5 +130,22 @@ export class AuthController {
     const { accessToken, refreshToken } =
       await this.authService.confirmLogin(dto);
     setAuthCookies(reply, accessToken, refreshToken);
+  }
+
+  /**
+   * New code or link for the same attempt: 202 with `method`, `attemptId`,
+   * `expiresInSeconds: 600`, `resendAfterSeconds: 60`. The old secret stops
+   * working.
+   *
+   * 400 for an unknown or consumed attempt, 429 within 60 seconds of the last
+   * email (with `retryAfterSeconds`) or after five wrong codes, 401
+   * `invalid_credentials` if the user is no longer active, 503 if the
+   * database or SMTP fails.
+   */
+  @Post('login/resend')
+  @Public()
+  @HttpCode(HttpStatus.ACCEPTED)
+  resendLogin(@Body() dto: ResendLoginDto): Promise<LoginResendResult> {
+    return this.authService.resendLogin(dto);
   }
 }
