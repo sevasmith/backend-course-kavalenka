@@ -6,19 +6,24 @@ import {
   Injectable,
   Logger,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Transactional } from 'typeorm-transactional';
 import { ConfigService } from '@/core/config/config.service';
 import { MailService } from '@/core/mail/mail.service';
+import { apiError, ErrorCode } from '@/core/http/api-error';
 import { PasswordService } from './password.service';
 import { UsersService } from '../users/users.service';
 import { RbacDefaultRoleService } from '../rbac/rbac-default-role.service';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
+import { LoginDto } from './dto/login.dto';
 import {
   ConfirmationOutcome,
   ConfirmRegistrationResult,
+  INVALID_CREDENTIALS_MESSAGE,
+  LoginUser,
   RegisterPendingResult,
   RegisterResult,
 } from './auth.types';
@@ -98,6 +103,32 @@ export class AuthService {
       }
       throw error;
     }
+  }
+
+  /**
+   * The password check of `POST /auth/login`. An unknown email, a wrong
+   * password and any status other than `active` throw the same 401, so the
+   * response never tells whether the account exists or what state it is in.
+   *
+   * An unknown email still runs a full Argon2 check (against the dummy hash),
+   * so it takes about as long as a wrong password. The status is checked
+   * after the password, so a wrong password for a blocked user and for an
+   * active user follow the same path.
+   */
+  async checkCredentials(dto: LoginDto): Promise<LoginUser> {
+    const user = await this.usersService.findByEmail(dto.email);
+
+    const passwordMatches = user
+      ? await this.passwordService.verify(user.passwordHash, dto.password)
+      : await this.passwordService.verifyDummy(dto.password);
+
+    if (!user || !passwordMatches || user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException(
+        apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+      );
+    }
+
+    return { id: user.id };
   }
 
   /**

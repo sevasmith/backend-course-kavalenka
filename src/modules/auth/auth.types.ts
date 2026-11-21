@@ -45,3 +45,16 @@ export type ConfirmationOutcome =
       userId?: string;
       attempts?: number;
     };
+
+/**
+ * The one message of every login 401: unknown email, wrong password and any
+ * non-active status must look the same.
+ */
+export const INVALID_CREDENTIALS_MESSAGE = 'Invalid email or password';
+
+/**
+ * Who passed the password check. Only the id: it becomes the JWT `sub`.
+ */
+export interface LoginUser {
+  id: string;
+}

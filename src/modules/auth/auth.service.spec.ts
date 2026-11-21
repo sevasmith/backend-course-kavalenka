@@ -5,11 +5,13 @@ import {
   HttpStatus,
   Logger,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
 import { ConfigService } from '@/core/config/config.service';
 import { MailService } from '@/core/mail/mail.service';
+import { ErrorCode } from '@/core/http/api-error';
 import { User } from '@/modules/users/user.entity';
 import { UserStatus } from '@/modules/users/user.types';
 import { UsersService } from '@/modules/users/users.service';
@@ -17,6 +19,7 @@ import { RbacDefaultRoleService } from '@/modules/rbac/rbac-default-role.service
 import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { INVALID_CREDENTIALS_MESSAGE } from './auth.types';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import {
   RegistrationChallengeConsumedReason,
@@ -37,7 +40,11 @@ describe('AuthService', () => {
 
   let service: AuthService;
   let config: { get: jest.Mock };
-  let passwordService: { hash: jest.Mock };
+  let passwordService: {
+    hash: jest.Mock;
+    verify: jest.Mock;
+    verifyDummy: jest.Mock;
+  };
   let usersService: {
     createUser: jest.Mock;
     findByEmail: jest.Mock;
@@ -73,7 +80,11 @@ describe('AuthService', () => {
     }
 
     config = { get: jest.fn() };
-    passwordService = { hash: jest.fn().mockResolvedValue(hash) };
+    passwordService = {
+      hash: jest.fn().mockResolvedValue(hash),
+      verify: jest.fn(),
+      verifyDummy: jest.fn().mockResolvedValue(false),
+    };
     usersService = {
       createUser: jest.fn().mockResolvedValue({
         id: 'user-id',
@@ -833,5 +844,73 @@ describe('AuthService', () => {
       expect(challengeService.create).toHaveBeenCalled();
       expectLogsWithout('654321');
     });
+  });
+
+  describe('checkCredentials', () => {
+    const userWith = (status: UserStatus): User => ({
+      id: 'user-id',
+      email: dto.email,
+      passwordHash: hash,
+      status,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    /** The single 401 every failed login must produce. */
+    const expectInvalidCredentials = async () => {
+      const error: unknown = await service
+        .checkCredentials(dto)
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(UnauthorizedException);
+      expect((error as UnauthorizedException).getResponse()).toEqual({
+        code: ErrorCode.INVALID_CREDENTIALS,
+        message: INVALID_CREDENTIALS_MESSAGE,
+      });
+    };
+
+    it('returns the id of an active user with the right password', async () => {
+      usersService.findByEmail.mockResolvedValue(userWith(UserStatus.ACTIVE));
+      passwordService.verify.mockResolvedValue(true);
+
+      await expect(service.checkCredentials(dto)).resolves.toEqual({
+        id: 'user-id',
+      });
+      expect(usersService.findByEmail).toHaveBeenCalledWith(dto.email);
+      expect(passwordService.verify).toHaveBeenCalledWith(hash, dto.password);
+      expect(passwordService.verifyDummy).not.toHaveBeenCalled();
+    });
+
+    it('checks the dummy hash and rejects an unknown email', async () => {
+      usersService.findByEmail.mockResolvedValue(null);
+
+      await expectInvalidCredentials();
+      expect(passwordService.verifyDummy).toHaveBeenCalledWith(dto.password);
+      expect(passwordService.verify).not.toHaveBeenCalled();
+    });
+
+    it('rejects a wrong password', async () => {
+      usersService.findByEmail.mockResolvedValue(userWith(UserStatus.ACTIVE));
+      passwordService.verify.mockResolvedValue(false);
+
+      await expectInvalidCredentials();
+    });
+
+    it.each([
+      UserStatus.PENDING,
+      UserStatus.BLOCKED,
+      UserStatus.DELETING,
+      UserStatus.DELETED,
+    ])(
+      'rejects a %s user with the right password the same way',
+      async (status) => {
+        usersService.findByEmail.mockResolvedValue(userWith(status));
+        passwordService.verify.mockResolvedValue(true);
+
+        await expectInvalidCredentials();
+        // The password is checked first, like for an active user.
+        expect(passwordService.verify).toHaveBeenCalledWith(hash, dto.password);
+      },
+    );
   });
 });
