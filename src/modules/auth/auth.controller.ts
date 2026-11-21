@@ -3,11 +3,15 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
+  Ip,
   Post,
   Res,
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
-import { RegistrationThrottle } from '@/core/throttler/throttler.decorators';
+import {
+  LoginThrottle,
+  RegistrationThrottle,
+} from '@/core/throttler/throttler.decorators';
 import { Public } from '@/modules/rbac/rbac.decorators';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
@@ -76,16 +80,19 @@ export class AuthController {
    * Direct login: 204 with the `access_token` and `refresh_token` cookies and
    * no body. The tokens are never in the body, so JavaScript can't read them.
    * 401 `invalid_credentials` for any wrong login, 503 (no cookies) if
-   * signing fails.
+   * signing fails. 429 over 30 requests per IP per minute, or after 5 failed
+   * logins for the same email from the same IP within 15 minutes.
    */
   @Post('login')
   @Public()
+  @LoginThrottle()
   @HttpCode(HttpStatus.NO_CONTENT)
   async login(
     @Body() dto: LoginDto,
+    @Ip() ip: string,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<void> {
-    const { accessToken, refreshToken } = await this.authService.login(dto);
+    const { accessToken, refreshToken } = await this.authService.login(dto, ip);
     setAuthCookies(reply, accessToken, refreshToken);
   }
 }

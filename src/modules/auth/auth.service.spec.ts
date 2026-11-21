@@ -20,6 +20,7 @@ import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RegistrationChallengeService } from './registration-challenge.service';
 import { TokenService } from './token.service';
+import { LoginAttemptLimiter } from './login-attempt-limiter';
 import { INVALID_CREDENTIALS_MESSAGE } from './auth.types';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import {
@@ -67,6 +68,7 @@ describe('AuthService', () => {
   };
   let defaultRoleService: { assignToActivatedUser: jest.Mock };
   let tokenService: { signAccess: jest.Mock; signRefresh: jest.Mock };
+  let limiter: { reserve: jest.Mock; reset: jest.Mock; release: jest.Mock };
 
   let logs: string[];
 
@@ -128,6 +130,12 @@ describe('AuthService', () => {
       signRefresh: jest.fn().mockReturnValue('refresh.jwt'),
     };
 
+    limiter = {
+      reserve: jest.fn().mockReturnValue({ key: 'slot', at: 1 }),
+      reset: jest.fn(),
+      release: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -141,6 +149,7 @@ describe('AuthService', () => {
         { provide: MailService, useValue: mailService },
         { provide: RbacDefaultRoleService, useValue: defaultRoleService },
         { provide: TokenService, useValue: tokenService },
+        { provide: LoginAttemptLimiter, useValue: limiter },
       ],
     }).compile();
 
@@ -923,6 +932,7 @@ describe('AuthService', () => {
   });
 
   describe('login', () => {
+    const ip = '203.0.113.7';
     const activeUser: User = {
       id: 'user-id',
       email: dto.email,
@@ -939,7 +949,7 @@ describe('AuthService', () => {
     });
 
     it('signs both tokens for the user id', async () => {
-      await expect(service.login(dto)).resolves.toEqual({
+      await expect(service.login(dto, ip)).resolves.toEqual({
         accessToken: 'access.jwt',
         refreshToken: 'refresh.jwt',
       });
@@ -953,7 +963,7 @@ describe('AuthService', () => {
     it('signs nothing when the credentials are wrong', async () => {
       passwordService.verify.mockResolvedValue(false);
 
-      await expect(service.login(dto)).rejects.toBeInstanceOf(
+      await expect(service.login(dto, ip)).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
       expect(tokenService.signAccess).not.toHaveBeenCalled();
@@ -968,7 +978,7 @@ describe('AuthService', () => {
         });
 
         const error: unknown = await service
-          .login(dto)
+          .login(dto, ip)
           .catch((e: unknown) => e);
 
         expect(error).toBeInstanceOf(ServiceUnavailableException);
@@ -983,9 +993,57 @@ describe('AuthService', () => {
     it('refuses while the email step is not implemented (task 10)', async () => {
       config.get.mockReturnValue(true);
 
-      await expect(service.login(dto)).rejects.toThrow('not implemented');
+      await expect(service.login(dto, ip)).rejects.toThrow('not implemented');
       expect(usersService.findByEmail).not.toHaveBeenCalled();
       expect(tokenService.signAccess).not.toHaveBeenCalled();
+    });
+
+    describe('failed-attempt limit', () => {
+      it('reserves a slot for the email and IP before the hash check', async () => {
+        await service.login(dto, ip);
+
+        expect(limiter.reserve).toHaveBeenCalledWith(dto.email, ip);
+        expect(limiter.reserve.mock.invocationCallOrder[0]).toBeLessThan(
+          passwordService.verify.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('resets the pair after a successful login', async () => {
+        await service.login(dto, ip);
+
+        expect(limiter.reset).toHaveBeenCalledWith({ key: 'slot', at: 1 });
+        expect(limiter.release).not.toHaveBeenCalled();
+      });
+
+      it('keeps the slot as a failure after a wrong login', async () => {
+        passwordService.verify.mockResolvedValue(false);
+
+        await expect(service.login(dto, ip)).rejects.toBeInstanceOf(
+          UnauthorizedException,
+        );
+        expect(limiter.reset).not.toHaveBeenCalled();
+        expect(limiter.release).not.toHaveBeenCalled();
+      });
+
+      it('gives the slot back when the check fails for another reason', async () => {
+        const failure = new Error('db down');
+        usersService.findByEmail.mockRejectedValue(failure);
+
+        await expect(service.login(dto, ip)).rejects.toBe(failure);
+        expect(limiter.release).toHaveBeenCalledWith({ key: 'slot', at: 1 });
+      });
+
+      it('checks no password when the pair is over the limit', async () => {
+        const tooMany = new HttpException('Too many', 429);
+        limiter.reserve.mockImplementation(() => {
+          throw tooMany;
+        });
+
+        await expect(service.login(dto, ip)).rejects.toBe(tooMany);
+        expect(usersService.findByEmail).not.toHaveBeenCalled();
+        expect(passwordService.verify).not.toHaveBeenCalled();
+        expect(passwordService.verifyDummy).not.toHaveBeenCalled();
+      });
     });
   });
 });

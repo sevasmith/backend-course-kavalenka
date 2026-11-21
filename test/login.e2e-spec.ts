@@ -24,6 +24,7 @@ describe('Direct login (e2e)', () => {
       // High enough that the IP limits never get in the way here.
       THROTTLE_GLOBAL_LIMIT: '1000',
       THROTTLE_REGISTRATION_LIMIT: '1000',
+      THROTTLE_LOGIN_LIMIT: '1000',
     }));
     db = app.get(DataSource);
   });
@@ -115,5 +116,62 @@ describe('Direct login (e2e)', () => {
 
     expect(res.status).toBe(400);
     expect(setCookies(res)).toHaveLength(0);
+  });
+
+  describe('failed-attempt limit (5 per email + IP in 15 minutes)', () => {
+    it('returns 429 on the 6th attempt, even with the right password', async () => {
+      const email = await createUser();
+
+      for (let i = 0; i < 5; i++) {
+        await login({ email, password: 'wrong123' }).expect(401);
+      }
+
+      const res = await login({ email, password });
+      expect(res.status).toBe(429);
+      expect(res.body).toMatchObject({ code: 'rate_limit_exceeded' });
+      expect(setCookies(res)).toHaveLength(0);
+    });
+
+    it('treats an unknown email the same way', async () => {
+      const email = newEmail();
+
+      for (let i = 0; i < 5; i++) {
+        await login({ email, password }).expect(401);
+      }
+
+      await login({ email, password }).expect(429);
+    });
+
+    it('does not block another email from the same IP', async () => {
+      const blocked = await createUser();
+      const other = await createUser();
+      for (let i = 0; i < 5; i++) {
+        await login({ email: blocked, password: 'wrong123' }).expect(401);
+      }
+
+      await login({ email: other, password }).expect(204);
+    });
+
+    it('starts over after a successful login', async () => {
+      const email = await createUser();
+      for (let i = 0; i < 4; i++) {
+        await login({ email, password: 'wrong123' }).expect(401);
+      }
+      await login({ email, password }).expect(204);
+
+      for (let i = 0; i < 5; i++) {
+        await login({ email, password: 'wrong123' }).expect(401);
+      }
+      await login({ email, password }).expect(429);
+    });
+
+    it('does not count a 400 as a failure', async () => {
+      const email = await createUser();
+      for (let i = 0; i < 6; i++) {
+        await login({ email }).expect(400);
+      }
+
+      await login({ email, password }).expect(204);
+    });
   });
 });

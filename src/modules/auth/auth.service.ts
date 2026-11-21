@@ -32,6 +32,7 @@ import { User } from '../users/user.entity';
 import { UserStatus } from '../users/user.types';
 import { RegistrationChallengeService } from './registration-challenge.service';
 import { TokenService } from './token.service';
+import { LoginAttemptLimiter } from './login-attempt-limiter';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import {
   INVALID_REGISTRATION_CONFIRMATION_MESSAGE,
@@ -66,6 +67,7 @@ export class AuthService {
     private readonly mailService: MailService,
     private readonly defaultRoleService: RbacDefaultRoleService,
     private readonly tokenService: TokenService,
+    private readonly loginAttemptLimiter: LoginAttemptLimiter,
   ) {}
 
   /**
@@ -112,14 +114,29 @@ export class AuthService {
    * `POST /auth/login`. Only the direct path for now: the email step
    * (`LOGIN_EMAIL_CONFIRMATION_ENABLED=true`, 202) comes in task 10.
    */
-  async login(dto: LoginDto): Promise<AuthTokens> {
+  async login(dto: LoginDto, ip: string): Promise<AuthTokens> {
     // TODO(task 10): create a login challenge and send the email instead.
     // Until then, refuse rather than skip a step the config asks for.
     if (this.configService.get('LOGIN_EMAIL_CONFIRMATION_ENABLED')) {
       throw new Error('Login email confirmation is not implemented yet');
     }
 
-    const user = await this.checkCredentials(dto);
+    // Before the hash: a blocked pair costs no Argon2 work.
+    const slot = this.loginAttemptLimiter.reserve(dto.email, ip);
+
+    let user: LoginUser;
+    try {
+      user = await this.checkCredentials(dto);
+    } catch (error) {
+      // Only a wrong login counts. Anything else (e.g. the database is
+      // down) is not the client's fault, so the slot is given back.
+      if (!(error instanceof UnauthorizedException)) {
+        this.loginAttemptLimiter.release(slot);
+      }
+      throw error;
+    }
+
+    this.loginAttemptLimiter.reset(slot);
     return this.signTokens(user.id);
   }
 

@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import { RegistrationChallengeService } from './registration-challenge.service';
 import { TokenService } from './token.service';
+import { LoginAttemptLimiter } from './login-attempt-limiter';
 import { UsersModule } from '../users/users.module';
 import { RbacModule } from '../rbac/rbac.module';
 
@@ -23,6 +24,7 @@ import { RbacModule } from '../rbac/rbac.module';
     AuthService,
     RegistrationChallengeService,
     TokenService,
+    LoginAttemptLimiter,
   ],
 })
 export class AuthModule {}

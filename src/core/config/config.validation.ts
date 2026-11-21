@@ -120,6 +120,9 @@ export const configValidationSchema = Joi.object<Config>({
   THROTTLE_GLOBAL_LIMIT: Joi.number().optional().default(10),
   THROTTLE_REGISTRATION_TTL: Joi.number().optional().default(60000),
   THROTTLE_REGISTRATION_LIMIT: Joi.number().optional().default(5),
+  // task.md: no more than 30 login requests per minute from one IP.
+  THROTTLE_LOGIN_TTL: Joi.number().optional().default(60000),
+  THROTTLE_LOGIN_LIMIT: Joi.number().optional().default(30),
 
   /**
    * Registration options

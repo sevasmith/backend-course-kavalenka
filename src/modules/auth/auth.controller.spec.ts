@@ -10,7 +10,10 @@ import type { FastifyReply } from 'fastify';
 import { UserStatus } from '@/modules/users/user.types';
 import { AuthController } from '../auth/auth.controller';
 import { AuthService } from './auth.service';
-import { isRegistrationThrottled } from '@/core/throttler/throttler.decorators';
+import {
+  isLoginThrottled,
+  isRegistrationThrottled,
+} from '@/core/throttler/throttler.decorators';
 import type { ExecutionContext } from '@nestjs/common';
 import { RegistrationChallengeMethod } from './registration-challenge.types';
 import { REFRESH_TOKEN_COOKIE } from './auth-cookies';
@@ -145,7 +148,9 @@ describe('AuthController', () => {
   });
 
   describe('login', () => {
-    const login = () => controller.login(dto, reply as unknown as FastifyReply);
+    const ip = '203.0.113.7';
+    const login = () =>
+      controller.login(dto, ip, reply as unknown as FastifyReply);
 
     it('answers 204 and sets both cookies, with no body', async () => {
       authService.login.mockResolvedValue({
@@ -154,7 +159,7 @@ describe('AuthController', () => {
       });
 
       await expect(login()).resolves.toBeUndefined();
-      expect(authService.login).toHaveBeenCalledWith(dto);
+      expect(authService.login).toHaveBeenCalledWith(dto, ip);
       expect(reply.setCookie).toHaveBeenCalledWith(
         ACCESS_TOKEN_COOKIE,
         'access.jwt',
@@ -181,6 +186,22 @@ describe('AuthController', () => {
 
         await expect(login()).rejects.toBe(error);
         expect(reply.setCookie).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  describe('login rate limit', () => {
+    const contextFor = (method: keyof AuthController) =>
+      ({ getHandler: () => handler(method) }) as unknown as ExecutionContext;
+
+    it('applies to login', () => {
+      expect(isLoginThrottled(contextFor('login'))).toBe(true);
+    });
+
+    it.each(['register', 'confirmRegistration', 'resendRegistration'] as const)(
+      'does not apply to %s',
+      (method) => {
+        expect(isLoginThrottled(contextFor(method))).toBe(false);
       },
     );
   });

@@ -8,7 +8,9 @@ import {
 import { ConfigModule } from '@/core/config/config.module';
 import { ConfigService } from '@/core/config/config.service';
 import {
+  isLoginThrottled,
   isRegistrationThrottled,
+  LOGIN_THROTTLER,
   REGISTRATION_THROTTLER,
 } from './throttler.decorators';
 
@@ -35,6 +37,13 @@ import {
             ttl: Number(config.get('THROTTLE_REGISTRATION_TTL')),
             limit: Number(config.get('THROTTLE_REGISTRATION_LIMIT')),
             skipIf: (context) => !isRegistrationThrottled(context),
+          },
+          /** Skipped unless the route has `@LoginThrottle()`. */
+          {
+            name: LOGIN_THROTTLER,
+            ttl: Number(config.get('THROTTLE_LOGIN_TTL')),
+            limit: Number(config.get('THROTTLE_LOGIN_LIMIT')),
+            skipIf: (context) => !isLoginThrottled(context),
           },
         ];
       },
