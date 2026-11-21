@@ -175,6 +175,21 @@ describe('AuthController', () => {
       );
     });
 
+    it('answers 202 with the attempt and sets no cookies when the email step is on', async () => {
+      const result = {
+        confirmationRequired: true,
+        method: 'otp',
+        attemptId: 'attempt-id',
+        expiresInSeconds: 600,
+        resendAfterSeconds: 60,
+      };
+      authService.login.mockResolvedValue(result);
+
+      await expect(login()).resolves.toBe(result);
+      expect(reply.status).toHaveBeenCalledWith(HttpStatus.ACCEPTED);
+      expect(reply.setCookie).not.toHaveBeenCalled();
+    });
+
     it('is public: a guest has no access token yet', () => {
       expect(Reflect.getMetadata(IS_PUBLIC_KEY, handler('login'))).toBe(true);
     });

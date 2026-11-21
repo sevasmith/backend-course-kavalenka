@@ -1,11 +1,16 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { IsNull } from 'typeorm';
 
 import { ConfigService } from '@/core/config/config.service';
-import type { LoginChallenge } from './login-challenge.entity';
+import { LoginChallenge } from './login-challenge.entity';
 import { LoginChallengeService } from './login-challenge.service';
-import { LoginChallengeMethod } from './login-challenge.types';
+import {
+  LoginChallengeConsumedReason,
+  LoginChallengeMethod,
+} from './login-challenge.types';
 
 // Wraps the real function so a test can check that it is used.
 jest.mock('node:crypto', () => {
@@ -22,15 +27,30 @@ describe('LoginChallengeService', () => {
 
   let service: LoginChallengeService;
   let configGet: jest.Mock;
+  let repository: {
+    create: jest.Mock;
+    save: jest.Mock;
+    findOne: jest.Mock;
+    update: jest.Mock;
+  };
 
   const challengeWith = (fields: Partial<LoginChallenge>): LoginChallenge =>
     ({ id: attemptId, ...fields }) as LoginChallenge;
 
   beforeEach(async () => {
     configGet = jest.fn(() => hmacKey);
+    repository = {
+      create: jest.fn((input: unknown) => input),
+      save: jest.fn((input: object) =>
+        Promise.resolve({ id: attemptId, ...input }),
+      ),
+      findOne: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         LoginChallengeService,
+        { provide: getRepositoryToken(LoginChallenge), useValue: repository },
         { provide: ConfigService, useValue: { get: configGet } },
       ],
     }).compile();
@@ -135,6 +155,83 @@ describe('LoginChallengeService', () => {
       expect(
         service.isExpired(challenge, new Date('2026-11-21T10:10:01.000Z')),
       ).toBe(true);
+    });
+  });
+
+  describe('resend pause', () => {
+    const lastSentAt = new Date('2026-11-21T10:00:00.000Z');
+    const challenge = challengeWith({ lastSentAt });
+
+    it('counts the seconds left, rounded up', () => {
+      expect(
+        service.secondsUntilResend(
+          challenge,
+          new Date('2026-11-21T10:00:18.500Z'),
+        ),
+      ).toBe(42);
+    });
+
+    it('is 0 at exactly 60 seconds and after', () => {
+      expect(
+        service.secondsUntilResend(
+          challenge,
+          new Date('2026-11-21T10:01:00.000Z'),
+        ),
+      ).toBe(0);
+      expect(
+        service.secondsUntilResend(
+          challenge,
+          new Date('2026-11-21T10:05:00.000Z'),
+        ),
+      ).toBe(0);
+    });
+  });
+
+  describe('database access', () => {
+    it('creates an attempt that stores only the HMAC of the secret', async () => {
+      const { challenge, secret } = await service.create(
+        'user-id',
+        LoginChallengeMethod.OTP,
+      );
+
+      expect(secret).toMatch(/^\d{6}$/);
+      expect(challenge).toMatchObject({
+        id: attemptId,
+        userId: 'user-id',
+        method: LoginChallengeMethod.OTP,
+        secretHash: hmac(secret),
+        lastSentAt: expect.any(Date) as Date,
+      });
+      expect(JSON.stringify(challenge)).not.toContain(`"${secret}"`);
+    });
+
+    it('finds the unconsumed attempt of the user without a lock', async () => {
+      await service.findActiveForUser('user-id');
+
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { userId: 'user-id', consumedAt: IsNull() },
+      });
+    });
+
+    it('finds and locks the unconsumed attempt of the user', async () => {
+      await service.findActiveForUserForUpdate('user-id');
+
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { userId: 'user-id', consumedAt: IsNull() },
+        lock: { mode: 'pessimistic_write' },
+      });
+    });
+
+    it('consumes an attempt with a reason', async () => {
+      await service.consume(
+        challengeWith({}),
+        LoginChallengeConsumedReason.REPLACED,
+      );
+
+      expect(repository.update).toHaveBeenCalledWith(attemptId, {
+        consumedAt: expect.any(Date) as Date,
+        consumedReason: LoginChallengeConsumedReason.REPLACED,
+      });
     });
   });
 });

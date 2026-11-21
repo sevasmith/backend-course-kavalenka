@@ -56,4 +56,29 @@ describe('MailService', () => {
       service.sendRegistrationOtp('user@example.com', '042317'),
     ).rejects.toThrow('ECONNREFUSED');
   });
+  it('sends the login OTP code with a login subject', async () => {
+    await service.sendLoginOtp('user@example.com', '042317');
+
+    expect(transporter.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'user@example.com',
+        subject: 'Confirm your login',
+        text: expect.stringContaining('042317') as string,
+      }),
+    );
+  });
+
+  it('sends the login magic link with a login subject', async () => {
+    const url = 'http://localhost:3000/login/confirm#attempt-id.secret';
+
+    await service.sendLoginMagicLink('user@example.com', url);
+
+    expect(transporter.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'user@example.com',
+        subject: 'Confirm your login',
+        text: expect.stringContaining(url) as string,
+      }),
+    );
+  });
 });

@@ -24,6 +24,8 @@ import {
   ConfirmationOutcome,
   ConfirmRegistrationResult,
   INVALID_CREDENTIALS_MESSAGE,
+  LoginConfirmationRequired,
+  LoginResult,
   LoginUser,
   RegisterPendingResult,
   RegisterResult,
@@ -34,6 +36,16 @@ import { RegistrationChallengeService } from './registration-challenge.service';
 import { TokenService } from './token.service';
 import { LoginAttemptLimiter } from './login-attempt-limiter';
 import { RegistrationChallenge } from './registration-challenge.entity';
+import { LoginChallengeService } from './login-challenge.service';
+import { LoginChallenge } from './login-challenge.entity';
+import {
+  CreatedLoginChallenge,
+  LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
+  LOGIN_CHALLENGE_TTL_SECONDS,
+  LOGIN_EMAIL_TOO_SOON_MESSAGE,
+  LoginChallengeConsumedReason,
+  LoginChallengeMethod,
+} from './login-challenge.types';
 import {
   INVALID_REGISTRATION_CONFIRMATION_MESSAGE,
   REGISTRATION_ATTEMPTS_EXHAUSTED_MESSAGE,
@@ -68,6 +80,7 @@ export class AuthService {
     private readonly defaultRoleService: RbacDefaultRoleService,
     private readonly tokenService: TokenService,
     private readonly loginAttemptLimiter: LoginAttemptLimiter,
+    private readonly loginChallengeService: LoginChallengeService,
   ) {}
 
   /**
@@ -111,16 +124,11 @@ export class AuthService {
   }
 
   /**
-   * `POST /auth/login`. Only the direct path for now: the email step
-   * (`LOGIN_EMAIL_CONFIRMATION_ENABLED=true`, 202) comes in task 10.
+   * `POST /auth/login`. After the password check:
+   * - `LOGIN_EMAIL_CONFIRMATION_ENABLED=false`: the token pair (204 + cookies);
+   * - `true`: a login attempt and an email, no tokens yet (202).
    */
-  async login(dto: LoginDto, ip: string): Promise<AuthTokens> {
-    // TODO(task 10): create a login challenge and send the email instead.
-    // Until then, refuse rather than skip a step the config asks for.
-    if (this.configService.get('LOGIN_EMAIL_CONFIRMATION_ENABLED')) {
-      throw new Error('Login email confirmation is not implemented yet');
-    }
-
+  async login(dto: LoginDto, ip: string): Promise<LoginResult> {
     // Before the hash: a blocked pair costs no Argon2 work.
     const slot = this.loginAttemptLimiter.reserve(dto.email, ip);
 
@@ -137,7 +145,183 @@ export class AuthService {
     }
 
     this.loginAttemptLimiter.reset(slot);
+
+    // Read per request: a config change applies only to new logins, while an
+    // issued attempt keeps its own method.
+    if (this.configService.get('LOGIN_EMAIL_CONFIRMATION_ENABLED')) {
+      return this.startLoginConfirmation(user.id, dto.email);
+    }
     return this.signTokens(user.id);
+  }
+
+  /**
+   * The second login step. The 429 pre-check runs without a lock, so a
+   * client that clicks "log in" again too soon costs no transaction; the
+   * transaction repeats the check under the lock, which is what makes it safe.
+   *
+   * The email goes out only after the commit. If it fails, the attempt stays
+   * and the client gets a 503 with the attempt fields (never the secret):
+   * the retry is a resend or a new login after the same 60-second pause.
+   */
+  private async startLoginConfirmation(
+    userId: string,
+    email: string,
+  ): Promise<LoginConfirmationRequired> {
+    let created: CreatedLoginChallenge;
+    try {
+      const previous =
+        await this.loginChallengeService.findActiveForUser(userId);
+      if (previous) {
+        this.rejectLoginEmailIfTooSoon(previous);
+      }
+      created = await this.replaceLoginChallenge(userId);
+    } catch (error) {
+      // 401 and 429 are answers; anything else means the attempt was not
+      // committed (e.g. the database is down) and no email was sent.
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      this.logger.error(
+        `Login attempt not created, userId=${userId}: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
+
+    const result = toLoginConfirmationRequired(created.challenge);
+    this.logger.log(
+      `Login attempt created, method=${result.method}, attemptId=${result.attemptId}, userId=${userId}`,
+    );
+    await this.sendLoginEmail(email, result, created.secret);
+    return result;
+  }
+
+  /**
+   * One transaction. Locks the user, then the user's open attempt: the order
+   * every login-attempt transaction uses (confirm and resend too), so two of
+   * them can never wait for each other in a cycle (a deadlock).
+   *
+   * Under the lock it rechecks what the password check saw: the user is still
+   * `active` (a block between the two would otherwise still get an email) and
+   * the 60-second pause (a parallel login may have just sent an email).
+   * Rejections happen before any write, so throwing here rolls back nothing.
+   *
+   * The old attempt is consumed as `replaced` before the insert: the partial
+   * unique index allows only one unconsumed attempt per user.
+   */
+  @Transactional()
+  private async replaceLoginChallenge(
+    userId: string,
+  ): Promise<CreatedLoginChallenge> {
+    const user = await this.usersService.findByIdForUpdate(userId);
+    if (user?.status !== UserStatus.ACTIVE) {
+      this.logger.warn(
+        `Login attempt rejected, reason=user_inactive, userId=${userId}`,
+      );
+      throw new UnauthorizedException(
+        apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+      );
+    }
+
+    const previous =
+      await this.loginChallengeService.findActiveForUserForUpdate(userId);
+    if (previous) {
+      this.rejectLoginEmailIfTooSoon(previous);
+      await this.loginChallengeService.consume(
+        previous,
+        LoginChallengeConsumedReason.REPLACED,
+      );
+      this.logger.log(
+        `Login attempt replaced, oldAttemptId=${previous.id}, userId=${userId}`,
+      );
+    }
+
+    // The server picks the method; the client never chooses it.
+    const method = this.configService.get('LOGIN_EMAIL_CONFIRMATION_METHOD');
+    return this.loginChallengeService.create(userId, method);
+  }
+
+  /**
+   * 429 with `retryAfterSeconds` while `last_sent_at + 60 s` is in the
+   * future: no new attempt, no email.
+   */
+  private rejectLoginEmailIfTooSoon(challenge: LoginChallenge): void {
+    const retryAfterSeconds =
+      this.loginChallengeService.secondsUntilResend(challenge);
+    if (retryAfterSeconds === 0) {
+      return;
+    }
+
+    this.logger.warn(
+      `Login attempt rejected, reason=too_soon, attemptId=${challenge.id}, ` +
+        `userId=${challenge.userId}, retryAfterSeconds=${retryAfterSeconds}`,
+    );
+    throw new HttpException(
+      apiError(ErrorCode.RATE_LIMIT_EXCEEDED, LOGIN_EMAIL_TOO_SOON_MESSAGE, {
+        retryAfterSeconds,
+      }),
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  /**
+   * Never logs the email, the secret or the link: only the attempt id.
+   */
+  private async sendLoginEmail(
+    email: string,
+    { method, attemptId }: LoginConfirmationRequired,
+    secret: string,
+  ): Promise<void> {
+    try {
+      if (method === LoginChallengeMethod.OTP) {
+        await this.mailService.sendLoginOtp(email, secret);
+      } else {
+        await this.mailService.sendLoginMagicLink(
+          email,
+          this.buildLoginMagicLink(attemptId, secret),
+        );
+      }
+    } catch (error) {
+      const { code, message } = error as Error & { code?: string };
+      this.logger.error(
+        `Login email failed, method=${method}, attemptId=${attemptId}: ${code ?? 'unknown'} ${message}`,
+      );
+      // The attempt is committed: the client can resend after the pause.
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Confirmation email could not be sent',
+          {
+            confirmationRequired: true,
+            method,
+            attemptId,
+            retryAfterSeconds: LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
+          },
+        ),
+      );
+    }
+
+    this.logger.log(
+      `Login email sent, method=${method}, attemptId=${attemptId}`,
+    );
+  }
+
+  /**
+   * Unlike registration, the token is `attemptId.secret`: confirm finds the
+   * attempt by its id. It goes into the fragment (#), which browsers never
+   * send to the server, so opening the link changes nothing by itself.
+   */
+  private buildLoginMagicLink(attemptId: string, secret: string): string {
+    const url = new URL(this.configService.get('LOGIN_CONFIRM_URL')!);
+    url.hash = this.loginChallengeService.buildMagicLinkToken(
+      attemptId,
+      secret,
+    );
+    return url.toString();
   }
 
   /**
@@ -532,5 +716,21 @@ function toPendingResult(
     attemptId: challenge.id,
     expiresInSeconds: REGISTRATION_CHALLENGE_TTL_SECONDS,
     resendAfterSeconds: REGISTRATION_CHALLENGE_RESEND_AFTER_SECONDS,
+  };
+}
+
+/**
+ * The 202 body of a login that needs the email step. The secret is never
+ * part of it.
+ */
+function toLoginConfirmationRequired(
+  challenge: LoginChallenge,
+): LoginConfirmationRequired {
+  return {
+    confirmationRequired: true,
+    method: challenge.method,
+    attemptId: challenge.id,
+    expiresInSeconds: LOGIN_CHALLENGE_TTL_SECONDS,
+    resendAfterSeconds: LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
   };
 }

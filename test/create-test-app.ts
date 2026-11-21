@@ -29,6 +29,15 @@ export class FakeMailService {
     return this.deliver(to, new URL(url).hash.slice(1));
   }
 
+  sendLoginOtp(to: string, code: string): Promise<void> {
+    return this.deliver(to, code);
+  }
+
+  /** Keeps the whole `attemptId.secret` token from the fragment. */
+  sendLoginMagicLink(to: string, url: string): Promise<void> {
+    return this.deliver(to, new URL(url).hash.slice(1));
+  }
+
   lastSecret(to: string): string {
     const secret = this.secrets.get(to);
     if (secret === undefined) {

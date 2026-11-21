@@ -21,6 +21,11 @@ import { PasswordService } from './password.service';
 import { RegistrationChallengeService } from './registration-challenge.service';
 import { TokenService } from './token.service';
 import { LoginAttemptLimiter } from './login-attempt-limiter';
+import { LoginChallengeService } from './login-challenge.service';
+import {
+  LoginChallengeConsumedReason,
+  LoginChallengeMethod,
+} from './login-challenge.types';
 import { INVALID_CREDENTIALS_MESSAGE } from './auth.types';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import {
@@ -65,6 +70,16 @@ describe('AuthService', () => {
   let mailService: {
     sendRegistrationOtp: jest.Mock;
     sendRegistrationMagicLink: jest.Mock;
+    sendLoginOtp: jest.Mock;
+    sendLoginMagicLink: jest.Mock;
+  };
+  let loginChallengeService: {
+    findActiveForUser: jest.Mock;
+    findActiveForUserForUpdate: jest.Mock;
+    create: jest.Mock;
+    consume: jest.Mock;
+    secondsUntilResend: jest.Mock;
+    buildMagicLinkToken: jest.Mock;
   };
   let defaultRoleService: { assignToActivatedUser: jest.Mock };
   let tokenService: { signAccess: jest.Mock; signRefresh: jest.Mock };
@@ -120,6 +135,25 @@ describe('AuthService', () => {
     mailService = {
       sendRegistrationOtp: jest.fn().mockResolvedValue(undefined),
       sendRegistrationMagicLink: jest.fn().mockResolvedValue(undefined),
+      sendLoginOtp: jest.fn().mockResolvedValue(undefined),
+      sendLoginMagicLink: jest.fn().mockResolvedValue(undefined),
+    };
+    loginChallengeService = {
+      findActiveForUser: jest.fn().mockResolvedValue(null),
+      findActiveForUserForUpdate: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockResolvedValue({
+        challenge: {
+          id: 'login-attempt-id',
+          userId: 'user-id',
+          method: LoginChallengeMethod.OTP,
+        },
+        secret: '654321',
+      }),
+      consume: jest.fn().mockResolvedValue(undefined),
+      secondsUntilResend: jest.fn().mockReturnValue(0),
+      buildMagicLinkToken: jest.fn(
+        (attemptId: string, secret: string) => `${attemptId}.${secret}`,
+      ),
     };
     defaultRoleService = {
       assignToActivatedUser: jest.fn().mockResolvedValue('assigned'),
@@ -150,6 +184,7 @@ describe('AuthService', () => {
         { provide: RbacDefaultRoleService, useValue: defaultRoleService },
         { provide: TokenService, useValue: tokenService },
         { provide: LoginAttemptLimiter, useValue: limiter },
+        { provide: LoginChallengeService, useValue: loginChallengeService },
       ],
     }).compile();
 
@@ -990,12 +1025,199 @@ describe('AuthService', () => {
       },
     );
 
-    it('refuses while the email step is not implemented (task 10)', async () => {
-      config.get.mockReturnValue(true);
+    describe('with the email step enabled', () => {
+      const confirmUrl = 'http://localhost:3000/login/confirm';
+      let method: LoginChallengeMethod;
 
-      await expect(service.login(dto, ip)).rejects.toThrow('not implemented');
-      expect(usersService.findByEmail).not.toHaveBeenCalled();
-      expect(tokenService.signAccess).not.toHaveBeenCalled();
+      beforeEach(() => {
+        method = LoginChallengeMethod.OTP;
+        config.get.mockImplementation(
+          (key: string) =>
+            ({
+              LOGIN_EMAIL_CONFIRMATION_ENABLED: true,
+              LOGIN_EMAIL_CONFIRMATION_METHOD: method,
+              LOGIN_CONFIRM_URL: confirmUrl,
+            })[key],
+        );
+        usersService.findByIdForUpdate.mockResolvedValue(activeUser);
+      });
+
+      const previous = {
+        id: 'old-attempt-id',
+        userId: 'user-id',
+        method: LoginChallengeMethod.OTP,
+      };
+
+      /** The error the service throws, to check its response object. */
+      const loginError = async () =>
+        (await service
+          .login(dto, ip)
+          .catch((e: unknown) => e)) as HttpException;
+
+      it('returns the 202 body and issues no tokens', async () => {
+        await expect(service.login(dto, ip)).resolves.toEqual({
+          confirmationRequired: true,
+          method: LoginChallengeMethod.OTP,
+          attemptId: 'login-attempt-id',
+          expiresInSeconds: 600,
+          resendAfterSeconds: 60,
+        });
+        expect(tokenService.signAccess).not.toHaveBeenCalled();
+        expect(tokenService.signRefresh).not.toHaveBeenCalled();
+        expect(limiter.reset).toHaveBeenCalled();
+      });
+
+      it('creates the attempt with the method from the config', async () => {
+        await service.login(dto, ip);
+
+        expect(loginChallengeService.create).toHaveBeenCalledWith(
+          'user-id',
+          LoginChallengeMethod.OTP,
+        );
+      });
+
+      it('sends the OTP by email after the attempt is created, and logs no secret', async () => {
+        await service.login(dto, ip);
+
+        expect(mailService.sendLoginOtp).toHaveBeenCalledWith(
+          dto.email,
+          '654321',
+        );
+        expect(
+          loginChallengeService.create.mock.invocationCallOrder[0],
+        ).toBeLessThan(mailService.sendLoginOtp.mock.invocationCallOrder[0]);
+        expectLogsWithout('654321');
+      });
+
+      it('sends a magic link with attemptId.secret in the fragment', async () => {
+        method = LoginChallengeMethod.MAGIC_LINK;
+        loginChallengeService.create.mockResolvedValue({
+          challenge: {
+            id: 'login-attempt-id',
+            userId: 'user-id',
+            method: LoginChallengeMethod.MAGIC_LINK,
+          },
+          secret: 'magic-secret',
+        });
+
+        await service.login(dto, ip);
+
+        expect(mailService.sendLoginMagicLink).toHaveBeenCalledWith(
+          dto.email,
+          `${confirmUrl}#login-attempt-id.magic-secret`,
+        );
+        expectLogsWithout('magic-secret');
+      });
+
+      it('locks the user before the previous attempt', async () => {
+        await service.login(dto, ip);
+
+        expect(usersService.findByIdForUpdate).toHaveBeenCalledWith('user-id');
+        expect(
+          usersService.findByIdForUpdate.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+          loginChallengeService.findActiveForUserForUpdate.mock
+            .invocationCallOrder[0],
+        );
+      });
+
+      it('replaces a previous attempt after the 60-second pause', async () => {
+        loginChallengeService.findActiveForUser.mockResolvedValue(previous);
+        loginChallengeService.findActiveForUserForUpdate.mockResolvedValue(
+          previous,
+        );
+
+        await service.login(dto, ip);
+
+        expect(loginChallengeService.consume).toHaveBeenCalledWith(
+          previous,
+          LoginChallengeConsumedReason.REPLACED,
+        );
+        expect(
+          loginChallengeService.consume.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+          loginChallengeService.create.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('answers 429 with the remaining seconds before the transaction', async () => {
+        loginChallengeService.findActiveForUser.mockResolvedValue(previous);
+        loginChallengeService.secondsUntilResend.mockReturnValue(42);
+
+        const error = await loginError();
+
+        expect(error.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+        expect(error.getResponse()).toMatchObject({
+          code: ErrorCode.RATE_LIMIT_EXCEEDED,
+          details: { retryAfterSeconds: 42 },
+        });
+        expect(usersService.findByIdForUpdate).not.toHaveBeenCalled();
+        expect(loginChallengeService.create).not.toHaveBeenCalled();
+        expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+      });
+
+      it('rechecks the pause under the lock (a parallel login just sent one)', async () => {
+        loginChallengeService.findActiveForUserForUpdate.mockResolvedValue(
+          previous,
+        );
+        loginChallengeService.secondsUntilResend.mockReturnValue(60);
+
+        const error = await loginError();
+
+        expect(error.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+        expect(loginChallengeService.consume).not.toHaveBeenCalled();
+        expect(loginChallengeService.create).not.toHaveBeenCalled();
+        expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+      });
+
+      it.each([UserStatus.BLOCKED, UserStatus.DELETING, UserStatus.DELETED])(
+        'answers the neutral 401 without an email when the user became %s',
+        async (status) => {
+          usersService.findByIdForUpdate.mockResolvedValue({
+            ...activeUser,
+            status,
+          });
+
+          const error = await loginError();
+
+          expect(error).toBeInstanceOf(UnauthorizedException);
+          expect(error.getResponse()).toEqual({
+            code: ErrorCode.INVALID_CREDENTIALS,
+            message: INVALID_CREDENTIALS_MESSAGE,
+          });
+          expect(loginChallengeService.create).not.toHaveBeenCalled();
+          expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+        },
+      );
+
+      it('answers 503 without an email when the attempt is not committed', async () => {
+        loginChallengeService.create.mockRejectedValue(new Error('db down'));
+
+        const error = await loginError();
+
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+      });
+
+      it('answers 503 with the attempt fields, but no secret, when SMTP fails', async () => {
+        mailService.sendLoginOtp.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        const error = await loginError();
+
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect(error.getResponse()).toEqual({
+          code: ErrorCode.SERVICE_UNAVAILABLE,
+          message: 'Confirmation email could not be sent',
+          details: {
+            confirmationRequired: true,
+            method: LoginChallengeMethod.OTP,
+            attemptId: 'login-attempt-id',
+            retryAfterSeconds: 60,
+          },
+        });
+        expect(JSON.stringify(error.getResponse())).not.toContain('654321');
+        expectLogsWithout('654321');
+      });
     });
 
     describe('failed-attempt limit', () => {

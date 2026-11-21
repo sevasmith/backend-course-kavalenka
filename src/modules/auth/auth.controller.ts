@@ -21,6 +21,7 @@ import { setAuthCookies } from './auth-cookies';
 import { AuthService } from './auth.service';
 import {
   ConfirmRegistrationResult,
+  LoginConfirmationRequired,
   RegisterPendingResult,
   RegisterResult,
 } from './auth.types';
@@ -79,6 +80,11 @@ export class AuthController {
   /**
    * Direct login: 204 with the `access_token` and `refresh_token` cookies and
    * no body. The tokens are never in the body, so JavaScript can't read them.
+   *
+   * With the email step on: 202 with the attempt (`attemptId`, `method`, ...)
+   * and no cookies; 429 with `retryAfterSeconds` if the last email was sent
+   * less than 60 seconds ago; 503 with the attempt fields if SMTP fails.
+   *
    * 401 `invalid_credentials` for any wrong login, 503 (no cookies) if
    * signing fails. 429 over 30 requests per IP per minute, or after 5 failed
    * logins for the same email from the same IP within 15 minutes.
@@ -91,8 +97,14 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Ip() ip: string,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): Promise<void> {
-    const { accessToken, refreshToken } = await this.authService.login(dto, ip);
-    setAuthCookies(reply, accessToken, refreshToken);
+  ): Promise<LoginConfirmationRequired | void> {
+    const result = await this.authService.login(dto, ip);
+
+    if ('confirmationRequired' in result) {
+      reply.status(HttpStatus.ACCEPTED);
+      return result;
+    }
+
+    setAuthCookies(reply, result.accessToken, result.refreshToken);
   }
 }

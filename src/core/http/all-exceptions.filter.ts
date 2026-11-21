@@ -12,7 +12,8 @@ import { isUniqueViolation } from '@/core/database/pg-errors';
 import {
   defaultErrorCode,
   ErrorCode,
-  ErrorResponseBody,
+  ErrorDetails,
+  ErrorResponseBodyWithDetails,
   isErrorCode,
 } from './api-error';
 
@@ -51,7 +52,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     httpAdapter.reply(host.switchToHttp().getResponse(), body, body.statusCode);
   }
 
-  private toResponseBody(exception: unknown): ErrorResponseBody {
+  private toResponseBody(exception: unknown): ErrorResponseBodyWithDetails {
     if (exception instanceof HttpException) {
       return this.fromHttpException(exception);
     }
@@ -78,20 +79,25 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
   }
 
-  private fromHttpException(exception: HttpException): ErrorResponseBody {
+  private fromHttpException(
+    exception: HttpException,
+  ): ErrorResponseBodyWithDetails {
     const statusCode = exception.getStatus();
     const response = exception.getResponse();
     const fields =
       typeof response === 'object'
-        ? (response as { code?: unknown; message?: unknown })
+        ? (response as { code?: unknown; message?: unknown; details?: unknown })
         : {};
 
     const code = isErrorCode(fields.code)
       ? fields.code
       : defaultErrorCode(statusCode);
+    // Spread first: a detail can never overwrite statusCode, code or message.
+    const details = isDetails(fields.details) ? fields.details : {};
 
     if (statusCode >= 500) {
       return {
+        ...details,
         statusCode,
         code,
         message: NEUTRAL_MESSAGES[code] ?? INTERNAL_ERROR_MESSAGE,
@@ -107,8 +113,20 @@ export class AllExceptionsFilter implements ExceptionFilter {
           ? fields.message
           : exception.message;
 
-    return { statusCode, code, message };
+    return { ...details, statusCode, code, message };
   }
+}
+
+/** Only the plain object `apiError()` builds; anything else is ignored. */
+function isDetails(value: unknown): value is ErrorDetails {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((item) =>
+      ['string', 'number', 'boolean'].includes(typeof item),
+    )
+  );
 }
 
 function isMessage(value: unknown): value is string | string[] {

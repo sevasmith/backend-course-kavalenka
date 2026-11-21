@@ -1,5 +1,6 @@
 import { UserStatus } from '@/modules/users/user.types';
 import { RegistrationChallengeMethod } from './registration-challenge.types';
+import { LoginChallengeMethod } from './login-challenge.types';
 
 export interface RegisterResult {
   id: string;
@@ -64,3 +65,18 @@ export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
 }
+
+/**
+ * The 202 body of a login that needs the email step. No cookies yet, and the
+ * secret is never part of it: it goes only into the email.
+ */
+export interface LoginConfirmationRequired {
+  confirmationRequired: true;
+  method: LoginChallengeMethod;
+  attemptId: string;
+  expiresInSeconds: number;
+  resendAfterSeconds: number;
+}
+
+/** Direct login gives the token pair; the email step gives the 202 body. */
+export type LoginResult = AuthTokens | LoginConfirmationRequired;

@@ -89,6 +89,55 @@ describe('AllExceptionsFilter', () => {
     });
   });
 
+  it('adds the details of apiError() to the body', () => {
+    const exception = new HttpException(
+      apiError(ErrorCode.RATE_LIMIT_EXCEEDED, 'Too soon', {
+        retryAfterSeconds: 42,
+      }),
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+
+    expect(handle(exception)).toEqual({
+      statusCode: 429,
+      code: ErrorCode.RATE_LIMIT_EXCEEDED,
+      message: 'Too soon',
+      retryAfterSeconds: 42,
+    });
+  });
+
+  it('keeps the details of a 5xx but still hides its message', () => {
+    const exception = new ServiceUnavailableException(
+      apiError(ErrorCode.SERVICE_UNAVAILABLE, 'SMTP refused', {
+        attemptId: 'attempt-id',
+        retryAfterSeconds: 60,
+      }),
+    );
+
+    expect(handle(exception)).toEqual({
+      statusCode: 503,
+      code: ErrorCode.SERVICE_UNAVAILABLE,
+      message: 'Service is temporarily unavailable',
+      attemptId: 'attempt-id',
+      retryAfterSeconds: 60,
+    });
+  });
+
+  it('never lets a detail overwrite statusCode, code or message', () => {
+    const exception = new BadRequestException(
+      apiError(ErrorCode.BAD_REQUEST, 'Bad', {
+        statusCode: 200,
+        code: 'ok',
+        message: 'fine',
+      }),
+    );
+
+    expect(handle(exception)).toEqual({
+      statusCode: 400,
+      code: ErrorCode.BAD_REQUEST,
+      message: 'Bad',
+    });
+  });
+
   it('maps a lost rbac@manage to 409 conflict', () => {
     expect(handle(new RbacManageInvariantError())).toMatchObject({
       statusCode: 409,

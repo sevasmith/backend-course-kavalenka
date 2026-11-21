@@ -6,6 +6,7 @@ import { PasswordService } from './password.service';
 import { AuthService } from './auth.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { LoginChallenge } from './login-challenge.entity';
 import { LoginChallengeService } from './login-challenge.service';
 import { TokenService } from './token.service';
 import { LoginAttemptLimiter } from './login-attempt-limiter';
@@ -17,7 +18,7 @@ import { RbacModule } from '../rbac/rbac.module';
     UsersModule,
     RbacModule,
     MailModule,
-    TypeOrmModule.forFeature([RegistrationChallenge]),
+    TypeOrmModule.forFeature([RegistrationChallenge, LoginChallenge]),
   ],
   controllers: [AuthController],
   providers: [

@@ -6,12 +6,17 @@ import {
 } from 'node:crypto';
 
 import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
 import { isUUID } from 'class-validator';
+import { IsNull, Repository } from 'typeorm';
 
 import { ConfigService } from '@/core/config/config.service';
-import type { LoginChallenge } from './login-challenge.entity';
+import { LoginChallenge } from './login-challenge.entity';
 import {
+  CreatedLoginChallenge,
+  LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
   LOGIN_CHALLENGE_TTL_SECONDS,
+  LoginChallengeConsumedReason,
   LoginChallengeMethod,
   LoginMagicLinkToken,
 } from './login-challenge.types';
@@ -26,16 +31,75 @@ const MAGIC_LINK_SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const TOKEN_SEPARATOR = '.';
 
 /**
- * Secrets of the second login step: generation, HMAC, constant-time check,
- * the magic link token format and the TTL.
+ * The attempts of the second login step: secrets (generation, HMAC,
+ * constant-time check, the magic link token format), the TTL and the resend
+ * pause, and simple reads and writes of `login_challenges`.
  *
- * No database and no SMTP here: `AuthService` loads and locks the rows and
- * sends the email; this service only answers "which secret?" and "does it
- * match?".
+ * No transactions and no SMTP here: `AuthService` opens the transaction,
+ * decides the lock order and sends the email.
  */
 @Injectable()
 export class LoginChallengeService {
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    @InjectRepository(LoginChallenge)
+    private readonly challengesRepository: Repository<LoginChallenge>,
+    private readonly configService: ConfigService,
+  ) {}
+
+  /**
+   * The user's unconsumed attempt, if any (at most one, by the partial
+   * unique index). Not locked: only for the 429 pre-check before the
+   * transaction, which repeats the check under the lock.
+   */
+  findActiveForUser(userId: string): Promise<LoginChallenge | null> {
+    return this.challengesRepository.findOne({
+      where: { userId, consumedAt: IsNull() },
+    });
+  }
+
+  /**
+   * Same as `findActiveForUser`, but locks the row (`SELECT ... FOR UPDATE`)
+   * until the transaction ends. Lock the user first, then call this. Must be
+   * called inside a transaction.
+   */
+  findActiveForUserForUpdate(userId: string): Promise<LoginChallenge | null> {
+    return this.challengesRepository.findOne({
+      where: { userId, consumedAt: IsNull() },
+      lock: { mode: 'pessimistic_write' },
+    });
+  }
+
+  /**
+   * Inserts a new attempt with a fresh secret. Only the HMAC is stored; the
+   * plain secret is returned once, for the email.
+   */
+  async create(
+    userId: string,
+    method: LoginChallengeMethod,
+  ): Promise<CreatedLoginChallenge> {
+    const secret = this.generateSecret(method);
+
+    const challenge = await this.challengesRepository.save(
+      this.challengesRepository.create({
+        userId,
+        method,
+        secretHash: this.hashSecret(secret),
+        lastSentAt: new Date(),
+      }),
+    );
+
+    return { challenge, secret };
+  }
+
+  async consume(
+    challenge: LoginChallenge,
+    reason: LoginChallengeConsumedReason,
+  ): Promise<void> {
+    await this.challengesRepository.update(challenge.id, {
+      consumedAt: new Date(),
+      consumedReason: reason,
+    });
+  }
 
   /**
    * OTP: 6 digits with leading zeros, from a CSPRNG (`randomInt`, not
@@ -116,5 +180,20 @@ export class LoginChallengeService {
    */
   isExpired(challenge: LoginChallenge, now: Date = new Date()): boolean {
     return now.getTime() >= this.expiresAt(challenge).getTime();
+  }
+
+  /**
+   * Whole seconds until a new email is allowed (`last_sent_at + 60 s`);
+   * 0 when it is allowed now. Rounded up, so a client that waits this long
+   * is never too early.
+   */
+  secondsUntilResend(
+    challenge: LoginChallenge,
+    now: Date = new Date(),
+  ): number {
+    const allowedAt =
+      challenge.lastSentAt.getTime() +
+      LOGIN_CHALLENGE_RESEND_AFTER_SECONDS * 1000;
+    return Math.max(0, Math.ceil((allowedAt - now.getTime()) / 1000));
   }
 }
