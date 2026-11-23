@@ -33,7 +33,11 @@ describe('AuthController', () => {
     resendLogin: jest.Mock;
     refresh: jest.Mock;
   };
-  let reply: { status: jest.Mock; setCookie: jest.Mock };
+  let reply: {
+    status: jest.Mock;
+    setCookie: jest.Mock;
+    clearCookie: jest.Mock;
+  };
 
   beforeEach(async () => {
     authService = {
@@ -45,7 +49,11 @@ describe('AuthController', () => {
       resendLogin: jest.fn(),
       refresh: jest.fn(),
     };
-    reply = { status: jest.fn(), setCookie: jest.fn() };
+    reply = {
+      status: jest.fn(),
+      setCookie: jest.fn(),
+      clearCookie: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AuthController],
@@ -344,6 +352,31 @@ describe('AuthController', () => {
 
     it('is public: the access token may already be expired', () => {
       expect(Reflect.getMetadata(IS_PUBLIC_KEY, handler('refresh'))).toBe(true);
+    });
+  });
+
+  describe('logout', () => {
+    it('answers 204 and clears both cookies with their original paths', () => {
+      expect(
+        controller.logout(reply as unknown as FastifyReply),
+      ).toBeUndefined();
+
+      expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler('logout'))).toBe(
+        HttpStatus.NO_CONTENT,
+      );
+      expect(reply.clearCookie).toHaveBeenCalledWith(
+        ACCESS_TOKEN_COOKIE,
+        expect.objectContaining({ path: '/' }),
+      );
+      expect(reply.clearCookie).toHaveBeenCalledWith(
+        REFRESH_TOKEN_COOKIE,
+        expect.objectContaining({ path: '/auth/refresh' }),
+      );
+      expect(reply.setCookie).not.toHaveBeenCalled();
+    });
+
+    it('is public: it works without a valid token', () => {
+      expect(Reflect.getMetadata(IS_PUBLIC_KEY, handler('logout'))).toBe(true);
     });
   });
 

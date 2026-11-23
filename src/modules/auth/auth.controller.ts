@@ -20,7 +20,11 @@ import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import { LoginDto } from './dto/login.dto';
 import { ConfirmLoginDto } from './dto/confirm-login.dto';
 import { ResendLoginDto } from './dto/resend-login.dto';
-import { REFRESH_TOKEN_COOKIE, setAuthCookies } from './auth-cookies';
+import {
+  clearAuthCookies,
+  REFRESH_TOKEN_COOKIE,
+  setAuthCookies,
+} from './auth-cookies';
 import { AuthService } from './auth.service';
 import {
   ConfirmRegistrationResult,
@@ -170,5 +174,18 @@ export class AuthController {
       request.cookies[REFRESH_TOKEN_COOKIE],
     );
     setAuthCookies(reply, accessToken, refreshToken);
+  }
+
+  /**
+   * Always 204, no body. Needs no valid token: it only tells this browser to
+   * delete both cookies (same `Path`, `Secure`, `SameSite`, no `Domain` as
+   * when they were set). Nothing is stored or revoked on the server, so a
+   * copied refresh token stays valid until its `exp` (stateless scheme).
+   */
+  @Post('logout')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  logout(@Res({ passthrough: true }) reply: FastifyReply): void {
+    clearAuthCookies(reply);
   }
 }
