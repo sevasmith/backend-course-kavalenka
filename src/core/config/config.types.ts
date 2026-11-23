@@ -53,6 +53,11 @@ export interface Config {
   LOGIN_EMAIL_CONFIRMATION_METHOD: EmailConfirmationMethod;
   /** HMAC-SHA256 key for login codes and link secrets. At least 32 bytes. */
   LOGIN_CHALLENGE_HMAC_KEY: string;
+  /**
+   * HMAC-SHA256 key for the log identifier of an unknown email, so attacks
+   * can be correlated without logging the address. At least 32 bytes.
+   */
+  AUDIT_LOG_HMAC_KEY: string;
   /** Page the login magic link opens; the token goes after `#`. */
   LOGIN_CONFIRM_URL?: string;
   /**

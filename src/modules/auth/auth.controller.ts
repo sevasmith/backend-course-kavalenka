@@ -23,6 +23,7 @@ import { LoginDto } from './dto/login.dto';
 import { ConfirmLoginDto } from './dto/confirm-login.dto';
 import { ResendLoginDto } from './dto/resend-login.dto';
 import {
+  ACCESS_TOKEN_COOKIE,
   clearAuthCookies,
   REFRESH_TOKEN_COOKIE,
   setAuthCookies,
@@ -200,7 +201,12 @@ export class AuthController {
   @Post('logout')
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
-  logout(@Res({ passthrough: true }) reply: FastifyReply): void {
+  logout(
+    @Req() request: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): void {
+    // Only for the log: the cookies are cleared whatever the token is.
+    this.authService.logout(request.cookies?.[ACCESS_TOKEN_COOKIE]);
     clearAuthCookies(reply, this.cookieSameSite);
   }
 }

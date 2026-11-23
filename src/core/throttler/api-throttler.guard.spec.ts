@@ -1,4 +1,9 @@
-import { ExecutionContext, HttpException, HttpStatus } from '@nestjs/common';
+import {
+  ExecutionContext,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { ThrottlerLimitDetail } from '@nestjs/throttler';
 
 import { ApiThrottlerGuard, RATE_LIMIT_MESSAGE } from './api-throttler.guard';
@@ -7,7 +12,10 @@ import { ApiThrottlerGuard, RATE_LIMIT_MESSAGE } from './api-throttler.guard';
 class TestableGuard extends ApiThrottlerGuard {
   throwFor(detail: Partial<ThrottlerLimitDetail>): Promise<void> {
     return this.throwThrottlingException(
-      {} as ExecutionContext,
+      {
+        getClass: () => ({ name: 'AuthController' }),
+        getHandler: () => ({ name: 'login' }),
+      } as unknown as ExecutionContext,
       detail as ThrottlerLimitDetail,
     );
   }
@@ -34,6 +42,32 @@ describe('ApiThrottlerGuard', () => {
       message: RATE_LIMIT_MESSAGE,
       details: { retryAfterSeconds: 42 },
     });
+  });
+
+  let warn: jest.SpyInstance;
+
+  // Captures the warning (and keeps the test output quiet).
+  beforeEach(() => {
+    warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+  });
+
+  afterEach(() => warn.mockRestore());
+
+  it('logs the route and the limit, not the client', async () => {
+    await guard
+      .throwFor({
+        timeToBlockExpire: 5,
+        limit: 30,
+        ttl: 60000,
+        tracker: '203.0.113.7',
+      })
+      .catch(() => undefined);
+
+    expect(warn).toHaveBeenCalledWith(
+      'Rate limit exceeded, route=AuthController.login, limit=30/60000ms',
+    );
   });
 
   it('never tells the client to retry in 0 seconds', async () => {

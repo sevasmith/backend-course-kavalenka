@@ -81,6 +81,7 @@ const SECRET_KEYS = [
   'JWT_REFRESH_SECRET',
   'LOGIN_CHALLENGE_HMAC_KEY',
   'REGISTRATION_CHALLENGE_HMAC_KEY',
+  'AUDIT_LOG_HMAC_KEY',
 ] as const satisfies readonly (keyof Config)[];
 
 /** Names of the first two variables that hold the same secret, or `null`. */
@@ -156,6 +157,7 @@ export const configValidationSchema = Joi.object<Config>({
     .optional()
     .default('otp'),
   LOGIN_CHALLENGE_HMAC_KEY: secretKey(),
+  AUDIT_LOG_HMAC_KEY: secretKey(),
   LOGIN_CONFIRM_URL: Joi.string()
     .uri({ scheme: ['http', 'https'] })
     .when('LOGIN_EMAIL_CONFIRMATION_METHOD', {

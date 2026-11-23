@@ -3,6 +3,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { ThrottlerGuard, ThrottlerLimitDetail } from '@nestjs/throttler';
 
@@ -17,10 +18,18 @@ export const RATE_LIMIT_MESSAGE = 'Too many requests, try again later';
  */
 @Injectable()
 export class ApiThrottlerGuard extends ThrottlerGuard {
+  private readonly logger = new Logger(ApiThrottlerGuard.name);
+
   protected throwThrottlingException(
-    _context: ExecutionContext,
+    context: ExecutionContext,
     detail: ThrottlerLimitDetail,
   ): Promise<void> {
+    // The route by its handler, not the URL (the query can hold anything);
+    // the limit tells which throttler fired. Never the IP-based key.
+    this.logger.warn(
+      `Rate limit exceeded, route=${context.getClass().name}.${context.getHandler().name}, ` +
+        `limit=${detail.limit}/${detail.ttl}ms`,
+    );
     return Promise.reject(
       new HttpException(
         apiError(ErrorCode.RATE_LIMIT_EXCEEDED, RATE_LIMIT_MESSAGE, {

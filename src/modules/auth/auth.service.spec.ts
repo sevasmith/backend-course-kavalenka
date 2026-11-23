@@ -21,6 +21,7 @@ import { PasswordService } from './password.service';
 import { RegistrationChallengeService } from './registration-challenge.service';
 import { TokenService } from './token.service';
 import { LoginAttemptLimiter } from './login-attempt-limiter';
+import { AuditIdService } from './audit-id.service';
 import { LoginChallengeService } from './login-challenge.service';
 import {
   LoginChallengeConsumedReason,
@@ -44,6 +45,9 @@ jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => undefined,
   IsolationLevel: { REPEATABLE_READ: 'REPEATABLE READ' },
 }));
+
+/** What the fake `AuditIdService` returns for any email. */
+const EMAIL_ID = 'email-audit-id';
 
 describe('AuthService', () => {
   const dto = { email: 'user@example.com', password: 'secret12' };
@@ -98,6 +102,7 @@ describe('AuthService', () => {
     signAccess: jest.Mock;
     signRefresh: jest.Mock;
     verifyRefresh: jest.Mock;
+    verifyAccess: jest.Mock;
   };
   let limiter: { reserve: jest.Mock; reset: jest.Mock; release: jest.Mock };
 
@@ -187,6 +192,7 @@ describe('AuthService', () => {
       signAccess: jest.fn().mockReturnValue('access.jwt'),
       signRefresh: jest.fn().mockReturnValue('refresh.jwt'),
       verifyRefresh: jest.fn(),
+      verifyAccess: jest.fn(),
     };
 
     limiter = {
@@ -210,6 +216,7 @@ describe('AuthService', () => {
         { provide: TokenService, useValue: tokenService },
         { provide: LoginAttemptLimiter, useValue: limiter },
         { provide: LoginChallengeService, useValue: loginChallengeService },
+        { provide: AuditIdService, useValue: { forEmail: () => EMAIL_ID } },
       ],
     }).compile();
 
@@ -652,16 +659,19 @@ describe('AuthService', () => {
           ({ REGISTRATION_EMAIL_CONFIRMATION_ENABLED: true })[key],
       );
       mailService.sendRegistrationOtp.mockRejectedValue(
-        new Error('ECONNREFUSED'),
+        Object.assign(new Error(`550 <${dto.email}>: Recipient rejected`), {
+          code: 'EENVELOPE',
+        }),
       );
 
       await expect(service.register(dto)).rejects.toBeInstanceOf(
         ServiceUnavailableException,
       );
       expect(logs).toContainEqual(
-        expect.stringContaining('Registration email failed'),
+        expect.stringMatching(/Registration email failed.*: EENVELOPE$/),
       );
-      expectLogsWithout('123456');
+      // The SMTP message quotes the address: only the code is logged.
+      expectLogsWithout('123456', 'Recipient rejected');
     });
 
     it('logs a taken email without the email and still returns 409', async () => {
@@ -966,11 +976,25 @@ describe('AuthService', () => {
       expect(passwordService.verify).not.toHaveBeenCalled();
     });
 
+    it('logs an unknown email by its keyed id, never the address', async () => {
+      usersService.findByEmail.mockResolvedValue(null);
+
+      await expectInvalidCredentials();
+      expect(logs).toEqual([
+        `Login rejected, reason=unknown_email, emailId=${EMAIL_ID}`,
+      ]);
+      expectLogsWithout();
+    });
+
     it('rejects a wrong password', async () => {
       usersService.findByEmail.mockResolvedValue(userWith(UserStatus.ACTIVE));
       passwordService.verify.mockResolvedValue(false);
 
       await expectInvalidCredentials();
+      expect(logs).toEqual([
+        'Login rejected, reason=wrong_password, userId=user-id',
+      ]);
+      expectLogsWithout();
     });
 
     it.each([
@@ -987,6 +1011,9 @@ describe('AuthService', () => {
         await expectInvalidCredentials();
         // The password is checked first, like for an active user.
         expect(passwordService.verify).toHaveBeenCalledWith(hash, dto.password);
+        expect(logs).toEqual([
+          `Login rejected, reason=user_${status}, userId=user-id`,
+        ]);
       },
     );
   });
@@ -1018,6 +1045,10 @@ describe('AuthService', () => {
       );
       expect(tokenService.signAccess).toHaveBeenCalledWith('user-id');
       expect(tokenService.signRefresh).toHaveBeenCalledWith('user-id');
+      expect(logs).toEqual([
+        'Login succeeded, method=password, userId=user-id',
+      ]);
+      expectLogsWithout('access.jwt', 'refresh.jwt');
     });
 
     it('signs nothing when the credentials are wrong', async () => {
@@ -1225,7 +1256,11 @@ describe('AuthService', () => {
       });
 
       it('answers 503 with the attempt fields, but no secret, when SMTP fails', async () => {
-        mailService.sendLoginOtp.mockRejectedValue(new Error('ECONNREFUSED'));
+        mailService.sendLoginOtp.mockRejectedValue(
+          Object.assign(new Error(`550 <${dto.email}>: Recipient rejected`), {
+            code: 'EENVELOPE',
+          }),
+        );
 
         const error = await loginError();
 
@@ -1241,7 +1276,11 @@ describe('AuthService', () => {
           },
         });
         expect(JSON.stringify(error.getResponse())).not.toContain('654321');
-        expectLogsWithout('654321');
+        // The SMTP message quotes the address: only the code is logged.
+        expect(logs).toContainEqual(
+          expect.stringMatching(/Login email failed.*: EENVELOPE$/),
+        );
+        expectLogsWithout('654321', 'Recipient rejected');
       });
     });
 
@@ -1272,12 +1311,23 @@ describe('AuthService', () => {
         expect(limiter.release).not.toHaveBeenCalled();
       });
 
-      it('gives the slot back when the check fails for another reason', async () => {
-        const failure = new Error('db down');
-        usersService.findByEmail.mockRejectedValue(failure);
+      it('gives the slot back and answers 503 when the database fails', async () => {
+        usersService.findByEmail.mockRejectedValue(
+          new Error('connect ECONNREFUSED 10.0.0.5:5432'),
+        );
 
-        await expect(service.login(dto, ip)).rejects.toBe(failure);
+        const error: unknown = await service
+          .login(dto, ip)
+          .catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect((error as ServiceUnavailableException).getResponse()).toEqual({
+          code: ErrorCode.SERVICE_UNAVAILABLE,
+          message: 'Login is temporarily unavailable',
+        });
         expect(limiter.release).toHaveBeenCalledWith({ key: 'slot', at: 1 });
+        // The error name only: the message can describe the infrastructure.
+        expect(logs).toEqual(['Login failed, reason=database: Error']);
       });
 
       it('checks no password when the pair is over the limit', async () => {
@@ -1290,7 +1340,37 @@ describe('AuthService', () => {
         expect(usersService.findByEmail).not.toHaveBeenCalled();
         expect(passwordService.verify).not.toHaveBeenCalled();
         expect(passwordService.verifyDummy).not.toHaveBeenCalled();
+        expect(logs).toEqual([
+          `Login rejected, reason=failure_limit, emailId=${EMAIL_ID}`,
+        ]);
+        expectLogsWithout();
       });
+    });
+  });
+
+  describe('logout', () => {
+    it('names the user from a valid access token', () => {
+      tokenService.verifyAccess.mockReturnValue({
+        ok: true,
+        userId: 'user-id',
+      });
+
+      service.logout('access.jwt');
+
+      expect(tokenService.verifyAccess).toHaveBeenCalledWith('access.jwt');
+      expect(logs).toEqual(['Logout, userId=user-id']);
+      expectLogsWithout('access.jwt');
+    });
+
+    it('still logs, as unknown, without a valid token', () => {
+      tokenService.verifyAccess.mockReturnValue({
+        ok: false,
+        reason: 'missing',
+      });
+
+      service.logout(undefined);
+
+      expect(logs).toEqual(['Logout, userId=unknown']);
     });
   });
 

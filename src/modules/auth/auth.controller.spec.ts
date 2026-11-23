@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Test, TestingModule } from '@nestjs/testing';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { UserStatus } from '@/modules/users/user.types';
 import { AuthController } from '../auth/auth.controller';
 import { AuthService } from './auth.service';
@@ -33,6 +33,7 @@ describe('AuthController', () => {
     confirmLogin: jest.Mock;
     resendLogin: jest.Mock;
     refresh: jest.Mock;
+    logout: jest.Mock;
   };
   let reply: {
     status: jest.Mock;
@@ -49,6 +50,7 @@ describe('AuthController', () => {
       confirmLogin: jest.fn(),
       resendLogin: jest.fn(),
       refresh: jest.fn(),
+      logout: jest.fn(),
     };
     reply = {
       status: jest.fn(),
@@ -361,9 +363,17 @@ describe('AuthController', () => {
 
   describe('logout', () => {
     it('answers 204 and clears both cookies with their original paths', () => {
+      const request = { cookies: { [ACCESS_TOKEN_COOKIE]: 'access.jwt' } };
+
       expect(
-        controller.logout(reply as unknown as FastifyReply),
+        controller.logout(
+          request as unknown as FastifyRequest,
+          reply as unknown as FastifyReply,
+        ),
       ).toBeUndefined();
+
+      // Only for the log; the cookies are cleared whatever it returns.
+      expect(authService.logout).toHaveBeenCalledWith('access.jwt');
 
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler('logout'))).toBe(
         HttpStatus.NO_CONTENT,

@@ -23,6 +23,7 @@ describe('configValidationSchema', () => {
     JWT_ACCESS_SECRET: 'a'.repeat(32),
     JWT_REFRESH_SECRET: 'r'.repeat(32),
     LOGIN_CHALLENGE_HMAC_KEY: 'l'.repeat(32),
+    AUDIT_LOG_HMAC_KEY: 'g'.repeat(32),
     JWT_ISSUER: 'test-issuer',
     JWT_AUDIENCE: 'test-audience',
     SMTP_HOST: 'localhost',
@@ -67,6 +68,7 @@ describe('configValidationSchema', () => {
       'JWT_REFRESH_SECRET',
       'LOGIN_CHALLENGE_HMAC_KEY',
       'REGISTRATION_CHALLENGE_HMAC_KEY',
+      'AUDIT_LOG_HMAC_KEY',
     ] as const;
 
     it.each(keys)('%s is required', (key) => {
@@ -122,6 +124,7 @@ describe('configValidationSchema', () => {
       ['JWT_ACCESS_SECRET', 'LOGIN_CHALLENGE_HMAC_KEY'],
       ['JWT_REFRESH_SECRET', 'LOGIN_CHALLENGE_HMAC_KEY'],
       ['LOGIN_CHALLENGE_HMAC_KEY', 'REGISTRATION_CHALLENGE_HMAC_KEY'],
+      ['LOGIN_CHALLENGE_HMAC_KEY', 'AUDIT_LOG_HMAC_KEY'],
     ])('rejects %s equal to %s', (first, second) => {
       const shared = 's'.repeat(32);
 

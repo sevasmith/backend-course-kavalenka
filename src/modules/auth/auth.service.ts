@@ -40,7 +40,8 @@ import { User } from '../users/user.entity';
 import { UserStatus } from '../users/user.types';
 import { RegistrationChallengeService } from './registration-challenge.service';
 import { TokenService } from './token.service';
-import { LoginAttemptLimiter } from './login-attempt-limiter';
+import { LoginAttemptLimiter, LoginAttemptSlot } from './login-attempt-limiter';
+import { AuditIdService } from './audit-id.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import { LoginChallengeService } from './login-challenge.service';
 import { LoginChallenge } from './login-challenge.entity';
@@ -90,6 +91,7 @@ export class AuthService {
     private readonly tokenService: TokenService,
     private readonly loginAttemptLimiter: LoginAttemptLimiter,
     private readonly loginChallengeService: LoginChallengeService,
+    private readonly auditIdService: AuditIdService,
   ) {}
 
   /**
@@ -139,18 +141,38 @@ export class AuthService {
    */
   async login(dto: LoginDto, ip: string): Promise<LoginResult> {
     // Before the hash: a blocked pair costs no Argon2 work.
-    const slot = this.loginAttemptLimiter.reserve(dto.email, ip);
+    let slot: LoginAttemptSlot;
+    try {
+      slot = this.loginAttemptLimiter.reserve(dto.email, ip);
+    } catch (error) {
+      // The limit is per email, so the log uses the email's id even for a
+      // known user: no lookup is made for a blocked pair.
+      this.logger.warn(
+        `Login rejected, reason=failure_limit, emailId=${this.auditIdService.forEmail(dto.email)}`,
+      );
+      throw error;
+    }
 
     let user: LoginUser;
     try {
       user = await this.checkCredentials(dto);
     } catch (error) {
-      // Only a wrong login counts. Anything else (e.g. the database is
-      // down) is not the client's fault, so the slot is given back.
-      if (!(error instanceof UnauthorizedException)) {
-        this.loginAttemptLimiter.release(slot);
+      // Only a wrong login counts (`checkCredentials` logged its reason).
+      if (error instanceof UnauthorizedException) {
+        throw error;
       }
-      throw error;
+      // Anything else (e.g. the database is down) is not the client's
+      // fault: the slot is given back and the answer is 503, not 500.
+      this.loginAttemptLimiter.release(slot);
+      this.logger.error(
+        `Login failed, reason=database: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
     }
 
     this.loginAttemptLimiter.reset(slot);
@@ -160,7 +182,21 @@ export class AuthService {
     if (this.configService.get('LOGIN_EMAIL_CONFIRMATION_ENABLED')) {
       return this.startLoginConfirmation(user.id, dto.email);
     }
-    return this.signTokens(user.id);
+    const tokens = this.signTokens(user.id);
+    this.logger.log(`Login succeeded, method=password, userId=${user.id}`);
+    return tokens;
+  }
+
+  /**
+   * `POST /auth/logout` only logs: the controller clears the cookies, and
+   * nothing is stored on the server. The access token is read only to name
+   * the user in the log; an invalid or missing one changes nothing.
+   */
+  logout(accessToken: string | undefined): void {
+    const verification = this.tokenService.verifyAccess(accessToken);
+    this.logger.log(
+      `Logout, userId=${verification.ok ? verification.userId : 'unknown'}`,
+    );
   }
 
   /**
@@ -298,9 +334,11 @@ export class AuthService {
         );
       }
     } catch (error) {
-      const { code, message } = error as Error & { code?: string };
+      // The code only: an SMTP error message can quote the recipient's
+      // address (e.g. "550 <user@example.com>: Recipient rejected").
+      const { code, name } = error as Error & { code?: string };
       this.logger.error(
-        `Login email failed, method=${method}, attemptId=${attemptId}: ${code ?? 'unknown'} ${message}`,
+        `Login email failed, method=${method}, attemptId=${attemptId}: ${code ?? name}`,
       );
       // The attempt is committed: the client can resend after the pause.
       throw new ServiceUnavailableException(
@@ -353,13 +391,28 @@ export class AuthService {
       ? await this.passwordService.verify(user.passwordHash, dto.password)
       : await this.passwordService.verifyDummy(dto.password);
 
-    if (!user || !passwordMatches || user.status !== UserStatus.ACTIVE) {
-      throw new UnauthorizedException(
-        apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+    // The reason goes only to the log; the client gets the same 401.
+    if (!user) {
+      this.rejectLogin(
+        `reason=unknown_email, emailId=${this.auditIdService.forEmail(dto.email)}`,
       );
+    }
+    if (!passwordMatches) {
+      this.rejectLogin(`reason=wrong_password, userId=${user.id}`);
+    }
+    if (user.status !== UserStatus.ACTIVE) {
+      this.rejectLogin(`reason=user_${user.status}, userId=${user.id}`);
     }
 
     return { id: user.id };
+  }
+
+  /** Logs who and why (never the email itself) and throws the shared 401. */
+  private rejectLogin(details: string): never {
+    this.logger.warn(`Login rejected, ${details}`);
+    throw new UnauthorizedException(
+      apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+    );
   }
 
   /**
@@ -1078,9 +1131,10 @@ export class AuthService {
     } catch (error) {
       // Nodemailer's `code` (e.g. ESOCKET) is the useful part: a refused
       // connection is an AggregateError with an empty message.
-      const { code, message } = error as Error & { code?: string };
+      // The code only: the message can quote the recipient's address.
+      const { code, name } = error as Error & { code?: string };
       this.logger.error(
-        `Registration email failed, method=${method}, attemptId=${attemptId}: ${code ?? 'unknown'} ${message}`,
+        `Registration email failed, method=${method}, attemptId=${attemptId}: ${code ?? name}`,
       );
       throw new ServiceUnavailableException(
         'Confirmation email could not be sent',
