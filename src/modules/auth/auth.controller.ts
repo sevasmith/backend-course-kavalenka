@@ -9,6 +9,8 @@ import {
   Res,
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { AuthCookieSameSite } from '@/core/config/config.types';
+import { ConfigService } from '@/core/config/config.service';
 import {
   LoginThrottle,
   RegistrationThrottle,
@@ -36,7 +38,15 @@ import {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  /** `SameSite` of both auth cookies, the same on set and on clear. */
+  private readonly cookieSameSite: AuthCookieSameSite;
+
+  constructor(
+    private readonly authService: AuthService,
+    configService: ConfigService,
+  ) {
+    this.cookieSameSite = configService.get('AUTH_COOKIE_SAME_SITE');
+  }
 
   /**
    * 201 when the account is created active, 202 when it waits for email
@@ -113,7 +123,12 @@ export class AuthController {
       return result;
     }
 
-    setAuthCookies(reply, result.accessToken, result.refreshToken);
+    setAuthCookies(
+      reply,
+      result.accessToken,
+      result.refreshToken,
+      this.cookieSameSite,
+    );
   }
 
   /**
@@ -134,7 +149,7 @@ export class AuthController {
   ): Promise<void> {
     const { accessToken, refreshToken } =
       await this.authService.confirmLogin(dto);
-    setAuthCookies(reply, accessToken, refreshToken);
+    setAuthCookies(reply, accessToken, refreshToken, this.cookieSameSite);
   }
 
   /**
@@ -173,7 +188,7 @@ export class AuthController {
     const { accessToken, refreshToken } = await this.authService.refresh(
       request.cookies[REFRESH_TOKEN_COOKIE],
     );
-    setAuthCookies(reply, accessToken, refreshToken);
+    setAuthCookies(reply, accessToken, refreshToken, this.cookieSameSite);
   }
 
   /**
@@ -186,6 +201,6 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   logout(@Res({ passthrough: true }) reply: FastifyReply): void {
-    clearAuthCookies(reply);
+    clearAuthCookies(reply, this.cookieSameSite);
   }
 }

@@ -164,6 +164,10 @@ export const configValidationSchema = Joi.object<Config>({
       otherwise: Joi.optional(),
     }),
   TRUSTED_ORIGINS: originList(),
+  AUTH_COOKIE_SAME_SITE: Joi.string()
+    .valid('strict', 'none')
+    .optional()
+    .default('strict'),
 
   /**
    * RBAC options
@@ -202,8 +206,18 @@ export const configValidationSchema = Joi.object<Config>({
       ? helpers.error('object.sharedSecret', { keys: shared.join(' and ') })
       : config;
   })
+  .custom((config: Config, helpers) =>
+    // `SameSite=None` exists only for a frontend on another site. Without a
+    // trusted origin it would just weaken the cookies for nothing.
+    config.AUTH_COOKIE_SAME_SITE === 'none' &&
+    config.TRUSTED_ORIGINS.length === 0
+      ? helpers.error('object.sameSiteWithoutOrigin')
+      : config,
+  )
   .messages({
     // Names the variables only: the error goes to the startup log, so it
     // must never contain the key values.
     'object.sharedSecret': '{{#keys}} must be different keys',
+    'object.sameSiteWithoutOrigin':
+      'AUTH_COOKIE_SAME_SITE=none needs at least one TRUSTED_ORIGINS entry',
   });

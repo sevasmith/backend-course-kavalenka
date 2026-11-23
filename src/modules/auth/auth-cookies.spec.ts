@@ -13,11 +13,19 @@ describe('auth cookies', () => {
     app = Fastify();
     await app.register(fastifyCookie);
     app.post('/set', (_request, reply) => {
-      setAuthCookies(reply, 'access-jwt', 'refresh-jwt');
+      setAuthCookies(reply, 'access-jwt', 'refresh-jwt', 'strict');
       return reply.status(204).send();
     });
     app.post('/clear', (_request, reply) => {
-      clearAuthCookies(reply);
+      clearAuthCookies(reply, 'strict');
+      return reply.status(204).send();
+    });
+    app.post('/set-cross-site', (_request, reply) => {
+      setAuthCookies(reply, 'access-jwt', 'refresh-jwt', 'none');
+      return reply.status(204).send();
+    });
+    app.post('/clear-cross-site', (_request, reply) => {
+      clearAuthCookies(reply, 'none');
       return reply.status(204).send();
     });
     await app.ready();
@@ -102,5 +110,23 @@ describe('auth cookies', () => {
         expect(cookie.toLowerCase()).not.toContain('domain=');
       }
     });
+  });
+  describe('for a frontend on another site', () => {
+    it.each(['/set-cross-site', '/clear-cross-site'])(
+      '%s uses SameSite=None with Secure and the same paths',
+      async (url) => {
+        const [access, refresh] = await setCookies(url);
+
+        for (const cookie of [access, refresh]) {
+          expect(cookie).toContain('SameSite=None');
+          expect(cookie).not.toContain('SameSite=Strict');
+          expect(cookie).toContain('Secure');
+          expect(cookie).toContain('HttpOnly');
+          expect(cookie.toLowerCase()).not.toContain('domain=');
+        }
+        expect(access).toContain('Path=/;');
+        expect(refresh).toContain('Path=/auth/refresh;');
+      },
+    );
   });
 });

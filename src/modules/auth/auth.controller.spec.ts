@@ -10,6 +10,7 @@ import type { FastifyReply } from 'fastify';
 import { UserStatus } from '@/modules/users/user.types';
 import { AuthController } from '../auth/auth.controller';
 import { AuthService } from './auth.service';
+import { ConfigService } from '@/core/config/config.service';
 import {
   isLoginThrottled,
   isRegistrationThrottled,
@@ -57,7 +58,10 @@ describe('AuthController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AuthController],
-      providers: [{ provide: AuthService, useValue: authService }],
+      providers: [
+        { provide: AuthService, useValue: authService },
+        { provide: ConfigService, useValue: { get: () => 'strict' } },
+      ],
     }).compile();
 
     controller = module.get<AuthController>(AuthController);

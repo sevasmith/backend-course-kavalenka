@@ -5,6 +5,7 @@ import { ConfigModule } from '@/core/config/config.module';
 import { DatabaseModule } from '@/core/database/database.module';
 import { HealthModule } from '@/core/health/health.module';
 import { AllExceptionsFilter } from '@/core/http/all-exceptions.filter';
+import { CsrfGuard } from '@/core/http/csrf.guard';
 import { ThrottlerModule } from '@/core/throttler/throttler.module';
 
 /**
@@ -34,14 +35,17 @@ import { RbacGuard } from '@/modules/rbac/rbac.guard';
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     /**
      * The security chain. Global guards run in the order they are
-     * registered, and both are listed here, in one module, so the order is
-     * explicit and doesn't depend on module import order:
+     * registered, and all of them are listed here, in one module, so the
+     * order is explicit and doesn't depend on module import order:
      * 1. who is calling (the access cookie and an `active` user);
-     * 2. what they may do (RBAC).
+     * 2. whether a state change may come from this origin (CSRF);
+     * 3. what they may do (RBAC).
      * `useExisting` reuses the instance each module provides with its own
-     * dependencies.
+     * dependencies. `CsrfGuard` needs only the global `ConfigService`, so
+     * this module creates it with `useClass`.
      */
     { provide: APP_GUARD, useExisting: AccessCheckGuard },
+    { provide: APP_GUARD, useClass: CsrfGuard },
     { provide: APP_GUARD, useExisting: RbacGuard },
   ],
 })

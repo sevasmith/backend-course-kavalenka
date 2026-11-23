@@ -240,4 +240,37 @@ describe('configValidationSchema', () => {
       expect(error?.message).toContain('invalid origin');
     });
   });
+  describe('AUTH_COOKIE_SAME_SITE', () => {
+    it('is strict by default', () => {
+      expect(parse(validEnv).AUTH_COOKIE_SAME_SITE).toBe('strict');
+    });
+
+    it('accepts none together with a trusted origin', () => {
+      const value = parse({
+        ...validEnv,
+        AUTH_COOKIE_SAME_SITE: 'none',
+        TRUSTED_ORIGINS: 'https://app.other.com',
+      });
+
+      expect(value.AUTH_COOKIE_SAME_SITE).toBe('none');
+    });
+
+    it('rejects none without a trusted origin', () => {
+      const { error } = configValidationSchema.validate({
+        ...validEnv,
+        AUTH_COOKIE_SAME_SITE: 'none',
+      });
+
+      expect(error?.message).toContain('TRUSTED_ORIGINS');
+    });
+
+    it.each(['lax', 'None', ''])('rejects %p', (value) => {
+      const { error } = configValidationSchema.validate({
+        ...validEnv,
+        AUTH_COOKIE_SAME_SITE: value,
+      });
+
+      expect(error).toBeDefined();
+    });
+  });
 });

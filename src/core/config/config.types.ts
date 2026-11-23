@@ -1,6 +1,9 @@
 /** How an email step delivers its secret: a 6-digit code or a link. */
 export type EmailConfirmationMethod = 'otp' | 'magic_link';
 
+/** The `SameSite` value of the auth cookies (1.2, "Cookies, CORS, and CSRF"). */
+export type AuthCookieSameSite = 'strict' | 'none';
+
 export interface Config {
   PORT: number;
   NODE_ENV: 'development' | 'production' | 'test';
@@ -57,6 +60,11 @@ export interface Config {
    * Empty when the frontend and the API share one origin.
    */
   TRUSTED_ORIGINS: string[];
+  /**
+   * `SameSite` of both auth cookies. `strict` (default) for the same origin
+   * or a same-site frontend; `none` only for a frontend on another site.
+   */
+  AUTH_COOKIE_SAME_SITE: AuthCookieSameSite;
 
   /**
    * RBAC options

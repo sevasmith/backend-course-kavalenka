@@ -10,6 +10,7 @@ import {
   StorageDriver,
 } from 'typeorm-transactional';
 
+import { setupCors } from '../src/core/http/cors';
 import { MailService } from '../src/core/mail/mail.service';
 
 /**
@@ -93,8 +94,9 @@ export async function createTestApp(env: Record<string, string> = {}): Promise<{
   );
   // The same pipe as in main.ts.
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  // The same cookie plugin as in main.ts: login sets the auth cookies with it.
+  // The same cookie plugin and CORS as in main.ts.
   await app.register(fastifyCookie);
+  setupCors(app);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
 

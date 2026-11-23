@@ -13,6 +13,7 @@ import {
 
 import { AppModule } from './core/app/app.module';
 import { ConfigService } from '@/core/config/config.service';
+import { setupCors } from '@/core/http/cors';
 import { setupOpenApi } from '@/core/http/openapi';
 
 async function bootstrap() {
@@ -34,18 +35,7 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
 
-  /**
-   * Only the exact origins from `TRUSTED_ORIGINS` may call the API from a
-   * browser with cookies. An empty list (frontend on the same origin) allows
-   * no cross-origin requests. The CSRF check (task 16) uses the same list.
-   */
-  app.enableCors({
-    origin: configService.get('TRUSTED_ORIGINS'),
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: true,
-    preflightContinue: false,
-    optionsSuccessStatus: 204,
-  });
+  setupCors(app);
 
   await app.register(fastifyCookie, {
     secret: configService.get('COOKIE_SECRET'),
