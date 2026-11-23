@@ -55,6 +55,12 @@ export type ConfirmationOutcome =
 export const INVALID_CREDENTIALS_MESSAGE = 'Invalid email or password';
 
 /**
+ * The one message of every `invalid_session` 401: a missing or bad token and
+ * a missing or non-active user must look the same.
+ */
+export const INVALID_SESSION_MESSAGE = 'Session is invalid or expired';
+
+/**
  * Who passed the password check. Only the id: it becomes the JWT `sub`.
  */
 export interface LoginUser {

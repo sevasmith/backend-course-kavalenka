@@ -5,9 +5,10 @@ import {
   HttpStatus,
   Ip,
   Post,
+  Req,
   Res,
 } from '@nestjs/common';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import {
   LoginThrottle,
   RegistrationThrottle,
@@ -19,7 +20,7 @@ import { ResendRegistrationDto } from './dto/resend-registration.dto';
 import { LoginDto } from './dto/login.dto';
 import { ConfirmLoginDto } from './dto/confirm-login.dto';
 import { ResendLoginDto } from './dto/resend-login.dto';
-import { setAuthCookies } from './auth-cookies';
+import { REFRESH_TOKEN_COOKIE, setAuthCookies } from './auth-cookies';
 import { AuthService } from './auth.service';
 import {
   ConfirmRegistrationResult,
@@ -147,5 +148,27 @@ export class AuthController {
   @HttpCode(HttpStatus.ACCEPTED)
   resendLogin(@Body() dto: ResendLoginDto): Promise<LoginResendResult> {
     return this.authService.resendLogin(dto);
+  }
+
+  /**
+   * 204 with a new pair of cookies. The token is read only from the
+   * `refresh_token` cookie: never from the body, the query or another header.
+   *
+   * 401 `invalid_session` for a missing or invalid token and for a missing or
+   * non-active user, 503 (no cookies) if the database or signing fails.
+   * 429 over 30 requests per IP per minute.
+   */
+  @Post('refresh')
+  @Public()
+  @LoginThrottle()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async refresh(
+    @Req() request: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<void> {
+    const { accessToken, refreshToken } = await this.authService.refresh(
+      request.cookies[REFRESH_TOKEN_COOKIE],
+    );
+    setAuthCookies(reply, accessToken, refreshToken);
   }
 }

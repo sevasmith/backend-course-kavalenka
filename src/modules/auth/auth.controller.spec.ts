@@ -31,6 +31,7 @@ describe('AuthController', () => {
     login: jest.Mock;
     confirmLogin: jest.Mock;
     resendLogin: jest.Mock;
+    refresh: jest.Mock;
   };
   let reply: { status: jest.Mock; setCookie: jest.Mock };
 
@@ -42,6 +43,7 @@ describe('AuthController', () => {
       login: jest.fn(),
       confirmLogin: jest.fn(),
       resendLogin: jest.fn(),
+      refresh: jest.fn(),
     };
     reply = { status: jest.fn(), setCookie: jest.fn() };
 
@@ -285,12 +287,72 @@ describe('AuthController', () => {
     });
   });
 
+  describe('refresh', () => {
+    const requestWith = (cookies: Record<string, string>) =>
+      ({
+        cookies,
+        body: { refreshToken: 'from.body' },
+      }) as unknown as Parameters<AuthController['refresh']>[0];
+    const refresh = (cookies: Record<string, string> = {}) =>
+      controller.refresh(
+        requestWith(cookies),
+        reply as unknown as FastifyReply,
+      );
+
+    it('answers 204 and sets the new pair, reading only the cookie', async () => {
+      authService.refresh.mockResolvedValue({
+        accessToken: 'new.access',
+        refreshToken: 'new.refresh',
+      });
+
+      await expect(
+        refresh({ [REFRESH_TOKEN_COOKIE]: 'old.refresh' }),
+      ).resolves.toBeUndefined();
+
+      expect(authService.refresh).toHaveBeenCalledWith('old.refresh');
+      expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler('refresh'))).toBe(
+        HttpStatus.NO_CONTENT,
+      );
+      expect(reply.setCookie).toHaveBeenCalledWith(
+        ACCESS_TOKEN_COOKIE,
+        'new.access',
+        expect.anything(),
+      );
+      expect(reply.setCookie).toHaveBeenCalledWith(
+        REFRESH_TOKEN_COOKIE,
+        'new.refresh',
+        expect.anything(),
+      );
+    });
+
+    it('passes undefined without the cookie (a token in the body is ignored)', async () => {
+      authService.refresh.mockRejectedValue(new UnauthorizedException());
+
+      await expect(refresh()).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authService.refresh).toHaveBeenCalledWith(undefined);
+      expect(reply.setCookie).not.toHaveBeenCalled();
+    });
+
+    it('sets no cookies on a 503', async () => {
+      authService.refresh.mockRejectedValue(new ServiceUnavailableException());
+
+      await expect(
+        refresh({ [REFRESH_TOKEN_COOKIE]: 'old.refresh' }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(reply.setCookie).not.toHaveBeenCalled();
+    });
+
+    it('is public: the access token may already be expired', () => {
+      expect(Reflect.getMetadata(IS_PUBLIC_KEY, handler('refresh'))).toBe(true);
+    });
+  });
+
   describe('login rate limit', () => {
     const contextFor = (method: keyof AuthController) =>
       ({ getHandler: () => handler(method) }) as unknown as ExecutionContext;
 
-    it('applies to login', () => {
-      expect(isLoginThrottled(contextFor('login'))).toBe(true);
+    it.each(['login', 'refresh'] as const)('applies to %s', (method) => {
+      expect(isLoginThrottled(contextFor(method))).toBe(true);
     });
 
     it.each(['register', 'confirmRegistration', 'resendRegistration'] as const)(

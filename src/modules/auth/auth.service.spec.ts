@@ -26,7 +26,11 @@ import {
   LoginChallengeConsumedReason,
   LoginChallengeMethod,
 } from './login-challenge.types';
-import { INVALID_CREDENTIALS_MESSAGE } from './auth.types';
+import {
+  INVALID_CREDENTIALS_MESSAGE,
+  INVALID_SESSION_MESSAGE,
+} from './auth.types';
+import { TokenFailure } from './token.types';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import {
   RegistrationChallengeConsumedReason,
@@ -56,6 +60,7 @@ describe('AuthService', () => {
     createUser: jest.Mock;
     findByEmail: jest.Mock;
     findByIdForUpdate: jest.Mock;
+    findStatusById: jest.Mock;
     updateStatus: jest.Mock;
   };
   let challengeService: {
@@ -89,7 +94,11 @@ describe('AuthService', () => {
     rotateSecret: jest.Mock;
   };
   let defaultRoleService: { assignToActivatedUser: jest.Mock };
-  let tokenService: { signAccess: jest.Mock; signRefresh: jest.Mock };
+  let tokenService: {
+    signAccess: jest.Mock;
+    signRefresh: jest.Mock;
+    verifyRefresh: jest.Mock;
+  };
   let limiter: { reserve: jest.Mock; reset: jest.Mock; release: jest.Mock };
 
   let logs: string[];
@@ -122,6 +131,7 @@ describe('AuthService', () => {
       } satisfies User),
       findByEmail: jest.fn(),
       findByIdForUpdate: jest.fn(),
+      findStatusById: jest.fn(),
       updateStatus: jest.fn().mockResolvedValue(undefined),
     };
     challengeService = {
@@ -176,6 +186,7 @@ describe('AuthService', () => {
     tokenService = {
       signAccess: jest.fn().mockReturnValue('access.jwt'),
       signRefresh: jest.fn().mockReturnValue('refresh.jwt'),
+      verifyRefresh: jest.fn(),
     };
 
     limiter = {
@@ -1764,6 +1775,104 @@ describe('AuthService', () => {
         expect(error).toBeInstanceOf(ServiceUnavailableException);
         expect(JSON.stringify(error.getResponse())).not.toContain('777888');
       });
+    });
+  });
+
+  describe('refresh', () => {
+    const oldToken = 'old.refresh.jwt';
+    const refresh = () => service.refresh(oldToken);
+
+    const refreshError = async (): Promise<HttpException> => {
+      try {
+        await refresh();
+      } catch (error) {
+        return error as HttpException;
+      }
+      throw new Error('expected refresh to fail');
+    };
+
+    const expectInvalidSession = (error: HttpException) => {
+      expect(error).toBeInstanceOf(UnauthorizedException);
+      expect(error.getResponse()).toEqual({
+        code: ErrorCode.INVALID_SESSION,
+        message: INVALID_SESSION_MESSAGE,
+      });
+      expect(tokenService.signAccess).not.toHaveBeenCalled();
+      expect(tokenService.signRefresh).not.toHaveBeenCalled();
+    };
+
+    beforeEach(() => {
+      tokenService.verifyRefresh.mockReturnValue({
+        ok: true,
+        userId: 'user-id',
+      });
+      usersService.findStatusById.mockResolvedValue({
+        id: 'user-id',
+        status: UserStatus.ACTIVE,
+      });
+    });
+
+    it('returns a new pair for an active user', async () => {
+      await expect(refresh()).resolves.toEqual({
+        accessToken: 'access.jwt',
+        refreshToken: 'refresh.jwt',
+      });
+      expect(tokenService.verifyRefresh).toHaveBeenCalledWith(oldToken);
+      expect(usersService.findStatusById).toHaveBeenCalledWith('user-id');
+      expect(tokenService.signAccess).toHaveBeenCalledWith('user-id');
+      expect(tokenService.signRefresh).toHaveBeenCalledWith('user-id');
+      expectLogsWithout(oldToken, 'access.jwt', 'refresh.jwt');
+    });
+
+    it.each(Object.values(TokenFailure))(
+      'answers 401 invalid_session for a %s token, without a database query',
+      async (reason) => {
+        tokenService.verifyRefresh.mockReturnValue({ ok: false, reason });
+
+        expectInvalidSession(await refreshError());
+        expect(usersService.findStatusById).not.toHaveBeenCalled();
+        expect(logs.some((line) => line.includes(`reason=${reason}`))).toBe(
+          true,
+        );
+        expectLogsWithout(oldToken);
+      },
+    );
+
+    it('answers 401 invalid_session when the user no longer exists', async () => {
+      usersService.findStatusById.mockResolvedValue(null);
+
+      expectInvalidSession(await refreshError());
+    });
+
+    it.each([
+      UserStatus.PENDING,
+      UserStatus.BLOCKED,
+      UserStatus.DELETING,
+      UserStatus.DELETED,
+    ])('answers 401 invalid_session for a %s user', async (status) => {
+      usersService.findStatusById.mockResolvedValue({ id: 'user-id', status });
+
+      expectInvalidSession(await refreshError());
+    });
+
+    it('answers 503, not 401, when the database fails', async () => {
+      usersService.findStatusById.mockRejectedValue(new Error('db down'));
+
+      const error = await refreshError();
+
+      expect(error).toBeInstanceOf(ServiceUnavailableException);
+      expect(error.getResponse()).toMatchObject({
+        code: ErrorCode.SERVICE_UNAVAILABLE,
+      });
+      expect(tokenService.signAccess).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 when signing fails', async () => {
+      tokenService.signRefresh.mockImplementation(() => {
+        throw new Error('sign failed');
+      });
+
+      expect(await refreshError()).toBeInstanceOf(ServiceUnavailableException);
     });
   });
 });

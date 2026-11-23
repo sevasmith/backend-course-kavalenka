@@ -46,6 +46,17 @@ export class UsersService {
     });
   }
 
+  /**
+   * Only `id` and `status`, without a lock: refresh (and later the access
+   * check) needs nothing else to decide, and never loads the password hash.
+   */
+  findStatusById(id: string): Promise<Pick<User, 'id' | 'status'> | null> {
+    return this.usersRepository.findOne({
+      where: { id },
+      select: { id: true, status: true },
+    });
+  }
+
   async updateStatus(id: string, status: UserStatus): Promise<void> {
     await this.usersRepository.update(id, { status });
   }

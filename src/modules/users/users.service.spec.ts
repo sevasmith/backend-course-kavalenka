@@ -80,6 +80,15 @@ describe('UsersService', () => {
     });
   });
 
+  it('reads only id and status by id, without a lock', async () => {
+    await service.findStatusById('user-id');
+
+    expect(repository.findOne).toHaveBeenCalledWith({
+      where: { id: 'user-id' },
+      select: { id: true, status: true },
+    });
+  });
+
   it('updates only the status', async () => {
     await service.updateStatus('user-id', UserStatus.ACTIVE);
 

@@ -26,6 +26,7 @@ import {
   ConfirmationOutcome,
   ConfirmRegistrationResult,
   INVALID_CREDENTIALS_MESSAGE,
+  INVALID_SESSION_MESSAGE,
   LoginConfirmationOutcome,
   LoginConfirmationRequired,
   LoginResendOutcome,
@@ -384,6 +385,64 @@ export class AuthService {
         ),
       );
     }
+  }
+
+  /**
+   * `POST /auth/refresh`: a new token pair for a valid refresh token whose
+   * user still exists and is `active` (1.2 §1.3.4).
+   *
+   * Stateless rotation: nothing is stored or revoked, so the used refresh
+   * token stays valid until its own `exp`. Reading the user on every refresh
+   * is what stops a blocked or deleted user.
+   *
+   * - bad token, missing or non-active user: one 401 `invalid_session`, the
+   *   reason only in the log;
+   * - database down: 503, not 401 (the session may be fine);
+   * - signing fails: 503 from `signTokens`, so no cookies are set and the old
+   *   refresh cookie still works for a retry.
+   */
+  async refresh(refreshToken: string | undefined): Promise<AuthTokens> {
+    const verification = this.tokenService.verifyRefresh(refreshToken);
+    if (!verification.ok) {
+      this.rejectRefresh(verification.reason);
+    }
+
+    const { userId } = verification;
+    let user: Pick<User, 'id' | 'status'> | null;
+    try {
+      user = await this.usersService.findStatusById(userId);
+    } catch (error) {
+      this.logger.error(
+        `Refresh failed, reason=database, userId=${userId}: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Session refresh is temporarily unavailable',
+        ),
+      );
+    }
+
+    if (!user) {
+      this.rejectRefresh('user_missing', userId);
+    }
+    if (user.status !== UserStatus.ACTIVE) {
+      this.rejectRefresh(`user_${user.status}`, userId);
+    }
+
+    const tokens = this.signTokens(userId);
+    this.logger.log(`Refresh succeeded, userId=${userId}`);
+    return tokens;
+  }
+
+  /** Logs the reason (never the token) and throws the shared 401. */
+  private rejectRefresh(reason: string, userId?: string): never {
+    this.logger.warn(
+      `Refresh rejected, reason=${reason}, userId=${userId ?? 'unknown'}`,
+    );
+    throw new UnauthorizedException(
+      apiError(ErrorCode.INVALID_SESSION, INVALID_SESSION_MESSAGE),
+    );
   }
 
   /**
