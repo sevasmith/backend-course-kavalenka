@@ -175,10 +175,13 @@ describe('RBAC (e2e)', () => {
       expect(names).toEqual(expect.arrayContaining(['admin', 'user']));
     });
 
-    it('denies an unknown user (no roles) by default', async () => {
-      await as('00000000-0000-4000-8000-000000000000')
+    it('never lets a user who does not exist reach RBAC', async () => {
+      // A validly signed token for a missing user: the access check refuses
+      // it with 401 before RBAC runs.
+      const res = await as('00000000-0000-4000-8000-000000000000')
         .get('/admin/rbac/roles')
-        .expect(403);
+        .expect(401);
+      expect(res.body).toMatchObject({ code: 'invalid_session' });
     });
 
     it('applies an admin change to the next request (snapshot reload)', async () => {
