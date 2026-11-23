@@ -32,7 +32,16 @@ describe('Login IP rate limit (e2e)', () => {
     await post('/auth/login').expect(400);
 
     const res = await post('/auth/login').expect(429);
-    expect(res.body).toMatchObject({ code: 'rate_limit_exceeded' });
+    // Our shape and text, not the library's "ThrottlerException: ...".
+    expect(res.body).toEqual({
+      statusCode: 429,
+      code: 'rate_limit_exceeded',
+      message: 'Too many requests, try again later',
+      retryAfterSeconds: expect.any(Number) as number,
+    });
+    expect(
+      (res.body as { retryAfterSeconds: number }).retryAfterSeconds,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('does not apply to register', async () => {

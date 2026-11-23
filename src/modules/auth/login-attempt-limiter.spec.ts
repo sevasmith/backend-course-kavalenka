@@ -3,6 +3,7 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 import {
   LOGIN_FAILURE_LIMIT,
   LOGIN_FAILURE_WINDOW_MS,
+  LOGIN_FAILURES_EXCEEDED_MESSAGE,
   LoginAttemptLimiter,
 } from './login-attempt-limiter';
 
@@ -38,6 +39,7 @@ describe('LoginAttemptLimiter', () => {
     expect((error as HttpException).getStatus()).toBe(
       HttpStatus.TOO_MANY_REQUESTS,
     );
+    return (error as HttpException).getResponse();
   };
 
   it('allows 5 failures, then refuses the 6th attempt', () => {
@@ -105,5 +107,16 @@ describe('LoginAttemptLimiter', () => {
     jest.advanceTimersByTime(LOGIN_FAILURE_WINDOW_MS + 1);
     fail(LOGIN_FAILURE_LIMIT);
     expect429();
+  });
+
+  it('names the code and when the oldest failure leaves the window', () => {
+    fail(LOGIN_FAILURE_LIMIT);
+    jest.advanceTimersByTime(60_000);
+
+    expect(expect429()).toEqual({
+      code: 'rate_limit_exceeded',
+      message: LOGIN_FAILURES_EXCEEDED_MESSAGE,
+      details: { retryAfterSeconds: LOGIN_FAILURE_WINDOW_MS / 1000 - 60 },
+    });
   });
 });

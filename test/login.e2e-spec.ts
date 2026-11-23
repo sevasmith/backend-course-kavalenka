@@ -104,9 +104,11 @@ describe('Direct login (e2e)', () => {
       ]);
 
       const res = await login({ email, password });
+      const unknown = await login({ email: newEmail(), password });
 
       expect(res.status).toBe(401);
-      expect(res.body).toMatchObject({ code: 'invalid_credentials' });
+      // Same code, text and shape as an unknown email: nothing to tell apart.
+      expect(res.body).toEqual(unknown.body);
       expect(setCookies(res)).toHaveLength(0);
     },
   );
@@ -128,7 +130,12 @@ describe('Direct login (e2e)', () => {
 
       const res = await login({ email, password });
       expect(res.status).toBe(429);
-      expect(res.body).toMatchObject({ code: 'rate_limit_exceeded' });
+      expect(res.body).toEqual({
+        statusCode: 429,
+        code: 'rate_limit_exceeded',
+        message: 'Too many failed login attempts, try again later',
+        retryAfterSeconds: expect.any(Number) as number,
+      });
       expect(setCookies(res)).toHaveLength(0);
     });
 

@@ -5,6 +5,8 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 
+import { apiError, ErrorCode } from '@/core/http/api-error';
+
 /** task.md: no more than 5 failed logins per (email + IP)… */
 export const LOGIN_FAILURE_LIMIT = 5;
 /** …within 15 minutes. */
@@ -58,8 +60,16 @@ export class LoginAttemptLimiter implements OnModuleDestroy {
     const recent = this.recentFailures(key, now);
 
     if (recent.length >= LOGIN_FAILURE_LIMIT) {
+      // The oldest failure leaves the window first and frees a slot.
+      const retryAfterMs = recent[0] + LOGIN_FAILURE_WINDOW_MS - now;
       throw new HttpException(
-        LOGIN_FAILURES_EXCEEDED_MESSAGE,
+        apiError(
+          ErrorCode.RATE_LIMIT_EXCEEDED,
+          LOGIN_FAILURES_EXCEEDED_MESSAGE,
+          {
+            retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)),
+          },
+        ),
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
