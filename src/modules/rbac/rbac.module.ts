@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
+import { DiscoveryModule } from '@nestjs/core';
 import { TerminusModule } from '@nestjs/terminus';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
@@ -69,10 +69,12 @@ import { UserRole } from './user-role.entity';
     RbacUserRolesService,
     RbacDefaultRoleService,
     RbacRouteScanner,
-    // The central guard: runs for every route of the app.
-    { provide: APP_GUARD, useClass: RbacGuard },
+    RbacGuard,
   ],
   exports: [
+    // The central guard: registered globally in `AppModule`, after the
+    // access check.
+    RbacGuard,
     RbacPolicySnapshotService,
     RbacPolicyHealthIndicator,
     RbacAuthorizationService,

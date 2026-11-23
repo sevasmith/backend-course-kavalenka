@@ -10,6 +10,7 @@ import { LoginChallenge } from './login-challenge.entity';
 import { LoginChallengeService } from './login-challenge.service';
 import { TokenService } from './token.service';
 import { LoginAttemptLimiter } from './login-attempt-limiter';
+import { AccessCheckGuard } from './access-check.guard';
 import { UsersModule } from '../users/users.module';
 import { RbacModule } from '../rbac/rbac.module';
 
@@ -28,6 +29,9 @@ import { RbacModule } from '../rbac/rbac.module';
     LoginChallengeService,
     TokenService,
     LoginAttemptLimiter,
+    AccessCheckGuard,
   ],
+  // Registered as a global guard in `AppModule`, before `RbacGuard`.
+  exports: [AccessCheckGuard],
 })
 export class AuthModule {}

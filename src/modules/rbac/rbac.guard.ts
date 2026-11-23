@@ -16,8 +16,9 @@ import { RbacAuthorizationService } from './rbac-authorization.service';
 import { RbacPolicyUnavailableError } from './rbac-policy-snapshot.service';
 
 /**
- * What the guard needs from the request. Stub until 1.2 Authentication:
- * nothing sets `user` yet, so every protected route answers 401.
+ * What the guard needs from the request. `user` is set only by
+ * `AccessCheckGuard`, which runs before this guard: a valid `access_token`
+ * cookie of an `active` user. Only the id, never roles from the token.
  */
 export interface AuthenticatedRequest {
   user?: { id: string };
@@ -79,6 +80,8 @@ export class RbacGuard implements CanActivate {
           .switchToHttp()
           .getRequest<AuthenticatedRequest>();
         const userId = request.user?.id;
+        // `AccessCheckGuard` already refused a request without a user. This
+        // is a second line of defence if the guard order ever changes.
         if (!userId) {
           throw new UnauthorizedException();
         }
