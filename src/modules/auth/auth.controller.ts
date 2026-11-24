@@ -11,7 +11,9 @@ import {
 import {
   ApiAcceptedResponse,
   ApiCookieAuth,
+  ApiCreatedResponse,
   ApiNoContentResponse,
+  ApiOkResponse,
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
@@ -22,7 +24,7 @@ import {
   LoginThrottle,
   RegistrationThrottle,
 } from '@/core/throttler/throttler.decorators';
-import { ApiErrorResponse } from '@/core/http/openapi';
+import { ApiErrorResponse, ApiRateLimitResponse } from '@/core/http/openapi';
 import { Public } from '@/modules/rbac/rbac.decorators';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
@@ -41,12 +43,15 @@ import {
   ApiAuthCookiesSet,
   ApiAuthPost,
   ApiLoginUnavailableResponse,
-  ApiRateLimitResponse,
 } from './auth-api-docs';
 import {
   LoginConfirmationRequiredDto,
   LoginResendResultDto,
 } from './dto/login-responses.dto';
+import {
+  RegisterPendingResultDto,
+  RegisterResultDto,
+} from './dto/registration-responses.dto';
 import {
   ConfirmRegistrationResult,
   LoginConfirmationRequired,
@@ -57,6 +62,8 @@ import {
 
 @Controller('auth')
 @ApiTags('Auth')
+// The global per-IP limit; a route with stricter limits documents its own 429.
+@ApiRateLimitResponse()
 export class AuthController {
   /** `SameSite` of both auth cookies, the same on set and on clear. */
   private readonly cookieSameSite: AuthCookieSameSite;
@@ -75,6 +82,36 @@ export class AuthController {
   @Post('register')
   @Public()
   @RegistrationThrottle()
+  @ApiOperation({
+    summary: 'Register with email and password',
+    description:
+      'Without the email step: 201, the account is `active`. With ' +
+      '`REGISTRATION_EMAIL_CONFIRMATION_ENABLED`: 202, the account is ' +
+      '`pending` until `POST /auth/register/confirm`.',
+  })
+  @ApiAuthPost()
+  @ApiCreatedResponse({
+    type: RegisterResultDto,
+    description: 'The account is active (the email step is off).',
+  })
+  @ApiAcceptedResponse({
+    type: RegisterPendingResultDto,
+    description:
+      'The account is pending and a code or link was sent. The secret is ' +
+      'never in the body.',
+  })
+  @ApiErrorResponse(
+    400,
+    '`bad_request`: invalid email, or the password does not meet the ' +
+      'policy (8-128 characters, a letter and a digit).',
+  )
+  @ApiErrorResponse(409, '`conflict`: the email is already registered.')
+  @ApiRateLimitResponse('too many registrations from this IP.')
+  @ApiErrorResponse(
+    503,
+    '`service_unavailable`: the email could not be sent. The pending ' +
+      'account and the attempt are kept: ask for a resend.',
+  )
   async register(
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) reply: FastifyReply,
@@ -95,6 +132,25 @@ export class AuthController {
   @Post('register/confirm')
   @Public()
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Confirm a registration with the emailed code or link',
+    description:
+      'Send either `{ attemptId, code }` (OTP) or `{ token }` (magic link), ' +
+      'never both. The account becomes `active`.',
+  })
+  @ApiAuthPost()
+  @ApiOkResponse({
+    type: RegisterResultDto,
+    description: 'The account is active.',
+  })
+  @ApiErrorResponse(
+    400,
+    '`bad_request`: the body is invalid, or the code or link is wrong, ' +
+      'expired, unknown or already used (the fifth wrong code too).',
+  )
+  @ApiRateLimitResponse(
+    'five wrong codes already used up this attempt; ask for a resend.',
+  )
   confirmRegistration(
     @Body() dto: ConfirmRegistrationDto,
   ): Promise<ConfirmRegistrationResult> {
@@ -109,6 +165,30 @@ export class AuthController {
   @Public()
   @RegistrationThrottle()
   @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Send a new registration code or link',
+    description:
+      'Replaces the attempt: the old code or link stops working, and the ' +
+      'new attempt has a new `attemptId`.',
+  })
+  @ApiAuthPost()
+  @ApiAcceptedResponse({
+    type: RegisterPendingResultDto,
+    description: 'A new code or link was sent.',
+  })
+  @ApiErrorResponse(
+    400,
+    '`bad_request`: invalid email, or no pending registration for it.',
+  )
+  @ApiRateLimitResponse(
+    'the last email was sent less than 60 seconds ago, or too many ' +
+      'requests from this IP.',
+  )
+  @ApiErrorResponse(
+    503,
+    '`service_unavailable`: the email could not be sent. The pending ' +
+      'account and the attempt are kept: ask for a resend.',
+  )
   resendRegistration(
     @Body() dto: ResendRegistrationDto,
   ): Promise<RegisterPendingResult> {

@@ -52,6 +52,32 @@ describe('Auth OpenAPI document', () => {
       (document.components?.schemas?.[name] as SchemaObject).properties ?? {},
     ).sort();
 
+  it('documents the status codes of each registration endpoint', () => {
+    expect(statuses('/auth/register')).toEqual(
+      ['201', '202', '400', '403', '409', '429', '503'].sort(),
+    );
+    expect(statuses('/auth/register/confirm')).toEqual(
+      ['200', '400', '403', '429'].sort(),
+    );
+    expect(statuses('/auth/register/resend')).toEqual(
+      ['202', '400', '403', '429', '503'].sort(),
+    );
+  });
+
+  it('describes the registration bodies, never with a secret', () => {
+    expect(schemaFields('RegisterDto')).toEqual(['email', 'password']);
+    expect(schemaFields('ConfirmRegistrationDto')).toEqual(
+      ['attemptId', 'code', 'token'].sort(),
+    );
+    expect(schemaFields('ResendRegistrationDto')).toEqual(['email']);
+    expect(schemaFields('RegisterResultDto')).toEqual(
+      ['email', 'id', 'status'].sort(),
+    );
+    expect(schemaFields('RegisterPendingResultDto')).toEqual(
+      schemaFields('LoginConfirmationRequiredDto'),
+    );
+  });
+
   it('documents the status codes of each 1.2 endpoint', () => {
     expect(statuses('/auth/login')).toEqual(
       ['202', '204', '400', '401', '403', '429', '503'].sort(),
@@ -65,7 +91,8 @@ describe('Auth OpenAPI document', () => {
     expect(statuses('/auth/refresh')).toEqual(
       ['204', '401', '403', '429', '503'].sort(),
     );
-    expect(statuses('/auth/logout')).toEqual(['204', '403'].sort());
+    // 429: the global per-IP limit applies even to logout.
+    expect(statuses('/auth/logout')).toEqual(['204', '403', '429'].sort());
   });
 
   it('documents Set-Cookie on every 204', () => {
@@ -112,13 +139,11 @@ describe('Auth OpenAPI document', () => {
       'invalid_credentials',
       'invalid_session',
       'csrf_rejected',
+      'conflict',
       'rate_limit_exceeded',
       'service_unavailable',
     ];
     for (const path of Object.keys(document.paths)) {
-      if (!path.startsWith('/auth/login') && path !== '/auth/refresh') {
-        continue;
-      }
       for (const [status, value] of Object.entries(post(path).responses)) {
         if (Number(status) < 400) continue;
         const { description } = value as ResponseObject;
@@ -144,11 +169,13 @@ describe('Auth OpenAPI document', () => {
     }
   });
 
-  it('documents the CSRF header as optional', () => {
-    const header = (post('/auth/login').parameters ?? []).find(
-      (parameter) =>
-        'name' in parameter && parameter.name === 'X-CSRF-Protection',
-    );
-    expect(header).toMatchObject({ in: 'header', required: false });
+  it('documents the CSRF header as optional on every auth route', () => {
+    for (const path of Object.keys(document.paths)) {
+      const header = (post(path).parameters ?? []).find(
+        (parameter) =>
+          'name' in parameter && parameter.name === 'X-CSRF-Protection',
+      );
+      expect(header).toMatchObject({ in: 'header', required: false });
+    }
   });
 });

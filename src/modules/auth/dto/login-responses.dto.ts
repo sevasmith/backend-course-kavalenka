@@ -54,33 +54,6 @@ export class LoginResendResultDto implements LoginResendResult {
 }
 
 /**
- * A 429 body: the shared error fields plus the wait, when it is known. The
- * shared fields are repeated instead of extending `ApiErrorResponseDto`, so
- * the examples can show this status and code.
- */
-export class RateLimitErrorDto implements ErrorResponseBody {
-  @ApiProperty({ example: 429 })
-  statusCode: number;
-
-  @ApiProperty({
-    enum: [ErrorCode.RATE_LIMIT_EXCEEDED],
-    example: ErrorCode.RATE_LIMIT_EXCEEDED,
-  })
-  code: ErrorCode;
-
-  @ApiProperty({ example: 'Too many requests, try again later' })
-  message: string;
-
-  @ApiPropertyOptional({
-    example: 42,
-    description:
-      'Seconds until a retry can pass. Missing when no wait helps, e.g. ' +
-      'the OTP entries are exhausted: start a new login instead.',
-  })
-  retryAfterSeconds?: number;
-}
-
-/**
  * The 503 body. When the email failed after the attempt was saved (login or
  * resend), it also carries the attempt, never the code or link. A database
  * or signing failure has only the shared fields.

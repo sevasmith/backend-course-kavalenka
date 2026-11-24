@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { ErrorCode, ErrorResponseBody } from './api-error';
 
@@ -22,4 +22,31 @@ export class ApiErrorResponseDto implements ErrorResponseBody {
     example: 'Forbidden resource',
   })
   message: string | string[];
+}
+
+/**
+ * A 429 body: the shared error fields plus the wait, when it is known. The
+ * shared fields are repeated instead of extending `ApiErrorResponseDto`, so
+ * the examples can show this status and code.
+ */
+export class RateLimitErrorDto implements ErrorResponseBody {
+  @ApiProperty({ example: 429 })
+  statusCode: number;
+
+  @ApiProperty({
+    enum: [ErrorCode.RATE_LIMIT_EXCEEDED],
+    example: ErrorCode.RATE_LIMIT_EXCEEDED,
+  })
+  code: ErrorCode;
+
+  @ApiProperty({ example: 'Too many requests, try again later' })
+  message: string;
+
+  @ApiPropertyOptional({
+    example: 42,
+    description:
+      'Seconds until a retry can pass. Missing when no wait helps, e.g. ' +
+      'the code entries are exhausted: start over instead.',
+  })
+  retryAfterSeconds?: number;
 }

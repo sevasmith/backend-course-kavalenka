@@ -23,7 +23,7 @@ import { PermissionBodyDto, PermissionResponse } from './dto/permission.dto';
 import { RbacPermissionsService } from './rbac-permissions.service';
 import { ActorUserId, RequirePermission } from './rbac.decorators';
 import { RbacAdminAuditInterceptor } from './rbac-admin-audit.interceptor';
-import { ApiRbacAdmin, ApiUuidParam } from './rbac-api-docs';
+import { ApiRbacAdmin, ApiRbacWrite, ApiUuidParam } from './rbac-api-docs';
 import { AuditTarget } from './rbac-audit.logger';
 
 const MANAGE_CONFLICT = 'no active user would keep `rbac@manage`';
@@ -45,6 +45,7 @@ export class RbacPermissionsController {
   }
 
   @Post()
+  @ApiRbacWrite()
   @ApiOperation({ summary: 'Create a permission with its actions' })
   @ApiCreatedResponse({ type: PermissionResponse })
   @ApiErrorResponse(400)
@@ -57,6 +58,7 @@ export class RbacPermissionsController {
   }
 
   @Put(':permissionId')
+  @ApiRbacWrite()
   @ApiOperation({
     summary: 'Replace a permission and its action set',
     description:
@@ -82,6 +84,7 @@ export class RbacPermissionsController {
   }
 
   @Delete(':permissionId')
+  @ApiRbacWrite()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete a permission without grants' })
   @ApiUuidParam('permissionId')

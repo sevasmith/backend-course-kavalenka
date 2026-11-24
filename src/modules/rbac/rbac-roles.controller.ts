@@ -23,7 +23,7 @@ import { RoleBodyDto, RoleResponse } from './dto/role.dto';
 import { RbacRolesService } from './rbac-roles.service';
 import { ActorUserId, RequirePermission } from './rbac.decorators';
 import { RbacAdminAuditInterceptor } from './rbac-admin-audit.interceptor';
-import { ApiRbacAdmin, ApiUuidParam } from './rbac-api-docs';
+import { ApiRbacAdmin, ApiRbacWrite, ApiUuidParam } from './rbac-api-docs';
 import { AuditTarget } from './rbac-audit.logger';
 
 /**
@@ -47,6 +47,7 @@ export class RbacRolesController {
   }
 
   @Post()
+  @ApiRbacWrite()
   @ApiOperation({ summary: 'Create a role' })
   @ApiCreatedResponse({ type: RoleResponse })
   @ApiErrorResponse(400)
@@ -59,6 +60,7 @@ export class RbacRolesController {
   }
 
   @Put(':roleId')
+  @ApiRbacWrite()
   @ApiOperation({
     summary: 'Replace a role',
     description: 'Full replacement: a missing `description` clears it.',
@@ -77,6 +79,7 @@ export class RbacRolesController {
   }
 
   @Delete(':roleId')
+  @ApiRbacWrite()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete an unused role' })
   @ApiUuidParam('roleId')
