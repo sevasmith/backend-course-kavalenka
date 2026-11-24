@@ -241,7 +241,11 @@ export class AuthService {
     this.logger.log(
       `Login attempt created, method=${result.method}, attemptId=${result.attemptId}, userId=${userId}`,
     );
-    await this.sendLoginEmail(email, result, created.secret);
+    await this.sendLoginEmail(
+      email,
+      { method: result.method, attemptId: result.attemptId, userId },
+      created.secret,
+    );
     return result;
   }
 
@@ -302,7 +306,8 @@ export class AuthService {
     }
 
     this.logger.warn(
-      `Login attempt rejected, reason=too_soon, attemptId=${challenge.id}, ` +
+      `Login attempt rejected, reason=too_soon, method=${challenge.method}, ` +
+        `attemptId=${challenge.id}, ` +
         `userId=${challenge.userId}, retryAfterSeconds=${retryAfterSeconds}`,
     );
     throw new HttpException(
@@ -314,14 +319,18 @@ export class AuthService {
   }
 
   /**
-   * Never logs the email, the secret or the link: only the attempt id.
+   * Never logs the email, the secret or the link: only ids and the method.
+   * `userId` is only for the log (1.2 §1.5: a known user's events name them).
    */
   private async sendLoginEmail(
     email: string,
     {
       method,
       attemptId,
-    }: Pick<LoginConfirmationRequired, 'method' | 'attemptId'>,
+      userId,
+    }: Pick<LoginConfirmationRequired, 'method' | 'attemptId'> & {
+      userId: string;
+    },
     secret: string,
   ): Promise<void> {
     try {
@@ -338,7 +347,7 @@ export class AuthService {
       // address (e.g. "550 <user@example.com>: Recipient rejected").
       const { code, name } = error as Error & { code?: string };
       this.logger.error(
-        `Login email failed, method=${method}, attemptId=${attemptId}: ${code ?? name}`,
+        `Login email failed, method=${method}, attemptId=${attemptId}, userId=${userId}: ${code ?? name}`,
       );
       // The attempt is committed: the client can resend after the pause.
       throw new ServiceUnavailableException(
@@ -356,7 +365,7 @@ export class AuthService {
     }
 
     this.logger.log(
-      `Login email sent, method=${method}, attemptId=${attemptId}`,
+      `Login email sent, method=${method}, attemptId=${attemptId}, userId=${userId}`,
     );
   }
 
@@ -734,7 +743,11 @@ export class AuthService {
     );
     await this.sendLoginEmail(
       email,
-      { method: challenge.method, attemptId: challenge.id },
+      {
+        method: challenge.method,
+        attemptId: challenge.id,
+        userId: challenge.userId,
+      },
       secret,
     );
 

@@ -1143,6 +1143,10 @@ describe('AuthService', () => {
           loginChallengeService.create.mock.invocationCallOrder[0],
         ).toBeLessThan(mailService.sendLoginOtp.mock.invocationCallOrder[0]);
         expectLogsWithout('654321');
+        expect(logs).toContain(
+          'Login email sent, method=otp, attemptId=login-attempt-id, ' +
+            'userId=user-id',
+        );
       });
 
       it('sends a magic link with attemptId.secret in the fragment', async () => {
@@ -1210,6 +1214,12 @@ describe('AuthService', () => {
         expect(usersService.findByIdForUpdate).not.toHaveBeenCalled();
         expect(loginChallengeService.create).not.toHaveBeenCalled();
         expect(mailService.sendLoginOtp).not.toHaveBeenCalled();
+        // The method of the saved attempt, as in every challenge event.
+        expect(logs).toContain(
+          `Login attempt rejected, reason=too_soon, method=${previous.method}, ` +
+            `attemptId=${previous.id}, userId=${previous.userId}, ` +
+            'retryAfterSeconds=42',
+        );
       });
 
       it('rechecks the pause under the lock (a parallel login just sent one)', async () => {
@@ -1277,8 +1287,9 @@ describe('AuthService', () => {
         });
         expect(JSON.stringify(error.getResponse())).not.toContain('654321');
         // The SMTP message quotes the address: only the code is logged.
-        expect(logs).toContainEqual(
-          expect.stringMatching(/Login email failed.*: EENVELOPE$/),
+        expect(logs).toContain(
+          'Login email failed, method=otp, attemptId=login-attempt-id, ' +
+            'userId=user-id: EENVELOPE',
         );
         expectLogsWithout('654321', 'Recipient rejected');
       });
@@ -1778,6 +1789,9 @@ describe('AuthService', () => {
           loginChallengeService.rotateSecret.mock.invocationCallOrder[0],
         ).toBeLessThan(mailService.sendLoginOtp.mock.invocationCallOrder[0]);
         expectLogsWithout('777888');
+        expect(logs).toContain(
+          `Login email sent, method=otp, attemptId=${attemptId}, userId=user-id`,
+        );
       });
 
       it('keeps the method of the attempt, whatever the config says', async () => {
