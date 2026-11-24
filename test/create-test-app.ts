@@ -12,6 +12,7 @@ import {
 
 import { setupCors } from '../src/core/http/cors';
 import { MailService } from '../src/core/mail/mail.service';
+import { generateRequestId } from '../src/core/logging/request-context';
 
 /**
  * Stands in for the SMTP mailer: keeps the last secret sent to each address,
@@ -89,7 +90,8 @@ export async function createTestApp(env: Record<string, string> = {}): Promise<{
     .compile();
 
   const app = moduleFixture.createNestApplication<NestFastifyApplication>(
-    new FastifyAdapter(),
+    // The same request ids as in main.ts.
+    new FastifyAdapter({ genReqId: generateRequestId }),
     { logger: false },
   );
   // The same pipe as in main.ts.

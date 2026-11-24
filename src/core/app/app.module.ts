@@ -4,6 +4,7 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@/core/config/config.module';
 import { DatabaseModule } from '@/core/database/database.module';
 import { HealthModule } from '@/core/health/health.module';
+import { RequestContextModule } from '@/core/logging/request-context';
 import { AllExceptionsFilter } from '@/core/http/all-exceptions.filter';
 import { CsrfGuard } from '@/core/http/csrf.guard';
 import { ThrottlerModule } from '@/core/throttler/throttler.module';
@@ -21,6 +22,8 @@ import { RbacGuard } from '@/modules/rbac/rbac.guard';
 
 @Module({
   imports: [
+    // First: its middleware gives every request an id the logs can read.
+    RequestContextModule,
     ConfigModule,
     DatabaseModule,
     HealthModule,

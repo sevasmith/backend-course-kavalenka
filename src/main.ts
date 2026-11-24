@@ -15,14 +15,19 @@ import { AppModule } from './core/app/app.module';
 import { ConfigService } from '@/core/config/config.service';
 import { setupCors } from '@/core/http/cors';
 import { setupOpenApi } from '@/core/http/openapi';
+import { generateRequestId } from '@/core/logging/request-context';
+import { RequestIdLogger } from '@/core/logging/request-id.logger';
 
 async function bootstrap() {
   initializeTransactionalContext({ storageDriver: StorageDriver.AUTO });
 
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter(),
+    new FastifyAdapter({ genReqId: generateRequestId }),
+    // Startup lines wait until the logger below is set, so they use it too.
+    { bufferLogs: true },
   );
+  app.useLogger(new RequestIdLogger());
 
   await app.register(compression);
 
