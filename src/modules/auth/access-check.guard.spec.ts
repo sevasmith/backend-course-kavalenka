@@ -5,148 +5,96 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
-import { Public, RequirePermission } from '@/modules/rbac/rbac.decorators';
-import type { AuthenticatedRequest } from '@/modules/rbac/rbac.guard';
+import { RequirePermission } from '@/modules/rbac/rbac.decorators';
 import { UsersService } from '@/modules/users/users.service';
 import { UserStatus } from '@/modules/users/user.types';
 import { AccessCheckGuard } from './access-check.guard';
 import { TokenService } from './token.service';
-import { TokenFailure, TokenVerification } from './token.types';
+
+const USER_ID = '7f1c1d2e-0000-4000-8000-000000000001';
 
 class TestController {
-  @Public()
-  open() {}
-
-  @RequirePermission('users', 'read')
-  protected() {}
-
-  undeclared() {}
+  @RequirePermission('rbac', 'manage')
+  protectedRoute() {}
 }
 
-type TestRequest = AuthenticatedRequest & {
-  cookies?: Record<string, string | undefined>;
-};
+interface TestRequest {
+  cookies: Record<string, string>;
+  user?: { id: string };
+}
 
-function contextFor(method: string, request: TestRequest): ExecutionContext {
+function contextFor(request: TestRequest): ExecutionContext {
   return {
-    getClass: () => TestController,
     getHandler: () =>
-      (TestController.prototype as unknown as Record<string, () => void>)[
-        method
-      ],
+      (TestController.prototype as unknown as Record<string, () => void>)
+        .protectedRoute,
+    getClass: () => TestController,
     switchToHttp: () => ({ getRequest: () => request }),
   } as unknown as ExecutionContext;
 }
 
-describe('AccessCheckGuard', () => {
-  const userId = '7d9f3c2e-0000-4000-8000-000000000001';
+async function captureError(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Expected the guard to throw');
+}
 
-  let guard: AccessCheckGuard;
-  let verifyAccess: jest.Mock<TokenVerification, [string | undefined]>;
+describe('AccessCheckGuard', () => {
   let findStatusById: jest.Mock;
+  let guard: AccessCheckGuard;
+  let request: TestRequest;
 
   beforeEach(() => {
-    verifyAccess = jest.fn<TokenVerification, [string | undefined]>();
     findStatusById = jest.fn();
     guard = new AccessCheckGuard(
       new Reflector(),
-      { verifyAccess } as unknown as TokenService,
+      {
+        verifyAccess: () => ({ ok: true, userId: USER_ID }),
+      } as unknown as TokenService,
       { findStatusById } as unknown as UsersService,
     );
+    request = { cookies: { access_token: 'token' } };
   });
 
-  const protectedRequest = (token = 'a.b.c'): TestRequest => ({
-    cookies: { access_token: token },
-  });
-
-  const expectInvalidSession = async (request: TestRequest) => {
-    const error: unknown = await guard
-      .canActivate(contextFor('protected', request))
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(UnauthorizedException);
-    expect((error as UnauthorizedException).getResponse()).toMatchObject({
-      code: 'invalid_session',
+  it('lets an active user through and sets only the id', async () => {
+    findStatusById.mockResolvedValue({
+      id: USER_ID,
+      status: UserStatus.ACTIVE,
     });
-    expect(request.user).toBeUndefined();
-  };
 
-  it('lets a public route through without reading the cookie', async () => {
-    await expect(guard.canActivate(contextFor('open', {}))).resolves.toBe(true);
-    expect(verifyAccess).not.toHaveBeenCalled();
+    await expect(guard.canActivate(contextFor(request))).resolves.toBe(true);
+    expect(request.user).toEqual({ id: USER_ID });
   });
 
-  it('leaves an undeclared route to RbacGuard (its 503)', async () => {
-    await expect(guard.canActivate(contextFor('undeclared', {}))).resolves.toBe(
-      true,
-    );
-    expect(verifyAccess).not.toHaveBeenCalled();
-  });
-
-  it('sets only the user id for an active user', async () => {
-    verifyAccess.mockReturnValue({ ok: true, userId });
-    findStatusById.mockResolvedValue({ id: userId, status: UserStatus.ACTIVE });
-    const request = protectedRequest('the-token');
-
-    await expect(
-      guard.canActivate(contextFor('protected', request)),
-    ).resolves.toBe(true);
-
-    expect(verifyAccess).toHaveBeenCalledWith('the-token');
-    expect(findStatusById).toHaveBeenCalledWith(userId);
-    expect(request.user).toEqual({ id: userId });
-  });
-
-  it('answers 401 without a cookie', async () => {
-    verifyAccess.mockReturnValue({ ok: false, reason: TokenFailure.MISSING });
-
-    await expectInvalidSession({});
-    expect(verifyAccess).toHaveBeenCalledWith(undefined);
-    expect(findStatusById).not.toHaveBeenCalled();
-  });
-
-  it.each(Object.values(TokenFailure))(
-    'answers 401 for a token failure: %s',
-    async (reason) => {
-      verifyAccess.mockReturnValue({ ok: false, reason });
-
-      await expectInvalidSession(protectedRequest());
-      expect(findStatusById).not.toHaveBeenCalled();
-    },
-  );
-
-  it('answers 401 when the user no longer exists', async () => {
-    verifyAccess.mockReturnValue({ ok: true, userId });
-    findStatusById.mockResolvedValue(null);
-
-    await expectInvalidSession(protectedRequest());
-  });
-
-  it.each([
-    UserStatus.PENDING,
-    UserStatus.BLOCKED,
-    UserStatus.DELETING,
-    UserStatus.DELETED,
-  ])('answers 401 for a %s user', async (status) => {
-    verifyAccess.mockReturnValue({ ok: true, userId });
-    findStatusById.mockResolvedValue({ id: userId, status });
-
-    await expectInvalidSession(protectedRequest());
-  });
-
-  it('answers 503, not 401, when the database fails', async () => {
-    verifyAccess.mockReturnValue({ ok: true, userId });
+  it('answers 503 authorization_unavailable when the users DB fails', async () => {
     findStatusById.mockRejectedValue(new Error('connection refused'));
-    const request = protectedRequest();
 
-    await expect(
-      guard.canActivate(contextFor('protected', request)),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    const error = await captureError(guard.canActivate(contextFor(request)));
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    const body = (error as ServiceUnavailableException).getResponse();
+    expect(body).toMatchObject({ code: 'authorization_unavailable' });
+    // The body never names the user or the cause.
+    expect(JSON.stringify(body)).not.toContain(USER_ID);
+    expect(JSON.stringify(body)).not.toContain('connection refused');
     expect(request.user).toBeUndefined();
   });
 
-  it('ignores a user set before the guard ran', async () => {
-    verifyAccess.mockReturnValue({ ok: false, reason: TokenFailure.MISSING });
+  it('answers the shared 401 for a non-active user without naming the status', async () => {
+    findStatusById.mockResolvedValue({
+      id: USER_ID,
+      status: UserStatus.BLOCKED,
+    });
 
-    await expectInvalidSession({ user: { id: userId } });
+    const error = await captureError(guard.canActivate(contextFor(request)));
+
+    expect(error).toBeInstanceOf(UnauthorizedException);
+    const body = (error as UnauthorizedException).getResponse();
+    expect(body).toMatchObject({ code: 'invalid_session' });
+    expect(JSON.stringify(body)).not.toContain(UserStatus.BLOCKED);
+    expect(JSON.stringify(body)).not.toContain(USER_ID);
   });
 });

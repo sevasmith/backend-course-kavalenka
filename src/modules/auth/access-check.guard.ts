@@ -29,7 +29,9 @@ import { TokenService } from './token.service';
  *
  * Every refusal (no cookie, bad or expired token, unknown or non-active
  * user) is the same 401 `invalid_session`; the reason goes only to the log.
- * A database error is 503: the session may be fine, so it is not a 401.
+ * A database error is 503 `authorization_unavailable` (1.3 §1.3.1): the
+ * session may be fine, so it is not a 401, and the access decision cannot
+ * be made, so it is the same code as an unavailable RBAC snapshot.
  *
  * The user is read on every request, so a blocked or deleted user loses
  * access at once, not when the 15-minute token expires.
@@ -80,8 +82,8 @@ export class AccessCheckGuard implements CanActivate {
       );
       throw new ServiceUnavailableException(
         apiError(
-          ErrorCode.SERVICE_UNAVAILABLE,
-          'Service is temporarily unavailable',
+          ErrorCode.AUTHORIZATION_UNAVAILABLE,
+          'Authorization is temporarily unavailable',
         ),
       );
     }
