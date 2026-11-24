@@ -14,6 +14,9 @@ export const OPENAPI_PATH = 'docs';
 /** The cookie that carries the access token (`task.md`, Authentication). */
 export const ACCESS_TOKEN_COOKIE = 'access_token';
 
+/** The cookie that carries the refresh token (`task.md`, Authentication). */
+export const REFRESH_TOKEN_COOKIE = 'refresh_token';
+
 /**
  * Builds the OpenAPI document from the controllers and DTO decorators and
  * serves it with Swagger UI.
@@ -42,6 +45,13 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       ACCESS_TOKEN_COOKIE,
       { type: 'apiKey', in: 'cookie' },
       ACCESS_TOKEN_COOKIE,
+    )
+    // Only `POST /auth/refresh` uses it: the browser sends this cookie to
+    // that path alone.
+    .addCookieAuth(
+      REFRESH_TOKEN_COOKIE,
+      { type: 'apiKey', in: 'cookie' },
+      REFRESH_TOKEN_COOKIE,
     )
     .build();
 

@@ -8,6 +8,13 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import {
+  ApiAcceptedResponse,
+  ApiCookieAuth,
+  ApiNoContentResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { AuthCookieSameSite } from '@/core/config/config.types';
 import { ConfigService } from '@/core/config/config.service';
@@ -15,6 +22,7 @@ import {
   LoginThrottle,
   RegistrationThrottle,
 } from '@/core/throttler/throttler.decorators';
+import { ApiErrorResponse } from '@/core/http/openapi';
 import { Public } from '@/modules/rbac/rbac.decorators';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
@@ -30,6 +38,16 @@ import {
 } from './auth-cookies';
 import { AuthService } from './auth.service';
 import {
+  ApiAuthCookiesSet,
+  ApiAuthPost,
+  ApiLoginUnavailableResponse,
+  ApiRateLimitResponse,
+} from './auth-api-docs';
+import {
+  LoginConfirmationRequiredDto,
+  LoginResendResultDto,
+} from './dto/login-responses.dto';
+import {
   ConfirmRegistrationResult,
   LoginConfirmationRequired,
   LoginResendResult,
@@ -38,6 +56,7 @@ import {
 } from './auth.types';
 
 @Controller('auth')
+@ApiTags('Auth')
 export class AuthController {
   /** `SameSite` of both auth cookies, the same on set and on clear. */
   private readonly cookieSameSite: AuthCookieSameSite;
@@ -112,6 +131,36 @@ export class AuthController {
   @Public()
   @LoginThrottle()
   @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Log in with email and password',
+    description:
+      'Without the email step: 204 with the auth cookies. With ' +
+      '`LOGIN_EMAIL_CONFIRMATION_ENABLED`: 202, a code or link is emailed, ' +
+      'and `POST /auth/login/confirm` sets the cookies.',
+  })
+  @ApiAuthPost()
+  @ApiAuthCookiesSet('Logged in (the email step is off).')
+  @ApiAcceptedResponse({
+    type: LoginConfirmationRequiredDto,
+    description:
+      'The email step is on: a code or link was sent. No cookies yet; the ' +
+      'secret is never in the body.',
+  })
+  @ApiErrorResponse(400, '`bad_request`: the body is invalid.')
+  @ApiErrorResponse(
+    401,
+    '`invalid_credentials`: unknown email, wrong password or a user that ' +
+      'is not `active`. The same body in every case.',
+  )
+  @ApiRateLimitResponse(
+    'over 30 requests per IP per minute, 5 failed logins for this email ' +
+      'from this IP within 15 minutes, or an email was already sent less ' +
+      'than 60 seconds ago.',
+  )
+  @ApiLoginUnavailableResponse(
+    'the database or token signing failed, or the email could not be ' +
+      'sent (then the body has the saved attempt; retry with a resend).',
+  )
   async login(
     @Body() dto: LoginDto,
     @Ip() ip: string,
@@ -144,6 +193,28 @@ export class AuthController {
   @Post('login/confirm')
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Confirm a login with the emailed code or link',
+    description:
+      'Send either `{ attemptId, code }` (OTP) or `{ token }` (magic link), ' +
+      'never both. A code or link is valid for 10 minutes.',
+  })
+  @ApiAuthPost()
+  @ApiAuthCookiesSet('Logged in.')
+  @ApiErrorResponse(
+    400,
+    '`bad_request`: the body is invalid, or the attempt is unknown, ' +
+      'expired, already used or replaced, or the code or link is wrong ' +
+      '(the fifth wrong code too).',
+  )
+  @ApiErrorResponse(
+    401,
+    '`invalid_credentials`: the user is no longer `active`.',
+  )
+  @ApiRateLimitResponse(
+    'five wrong codes already used up this attempt; start a new login.',
+  )
+  @ApiLoginUnavailableResponse('the database or token signing failed.')
   async confirmLogin(
     @Body() dto: ConfirmLoginDto,
     @Res({ passthrough: true }) reply: FastifyReply,
@@ -166,6 +237,34 @@ export class AuthController {
   @Post('login/resend')
   @Public()
   @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Send a new login code or link',
+    description:
+      'Replaces the secret of the same attempt (the old one stops working), ' +
+      'restarts the 10 minutes and resets the code counter.',
+  })
+  @ApiAuthPost()
+  @ApiAcceptedResponse({
+    type: LoginResendResultDto,
+    description: 'A new code or link was sent.',
+  })
+  @ApiErrorResponse(
+    400,
+    '`bad_request`: the body is invalid, or the attempt is unknown, ' +
+      'already used or replaced.',
+  )
+  @ApiErrorResponse(
+    401,
+    '`invalid_credentials`: the user is no longer `active`.',
+  )
+  @ApiRateLimitResponse(
+    'the last email was sent less than 60 seconds ago, or five wrong ' +
+      'codes used up the attempt.',
+  )
+  @ApiLoginUnavailableResponse(
+    'the database failed, or the email could not be sent (the new secret ' +
+      'is saved; retry after 60 seconds).',
+  )
   resendLogin(@Body() dto: ResendLoginDto): Promise<LoginResendResult> {
     return this.authService.resendLogin(dto);
   }
@@ -182,6 +281,25 @@ export class AuthController {
   @Public()
   @LoginThrottle()
   @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Get a new pair of auth cookies',
+    description:
+      'Reads the token only from the `refresh_token` cookie, which the ' +
+      'browser sends to this path alone. No body.',
+  })
+  @ApiCookieAuth(REFRESH_TOKEN_COOKIE)
+  @ApiAuthPost()
+  @ApiAuthCookiesSet('A new pair.')
+  @ApiErrorResponse(
+    401,
+    '`invalid_session`: the refresh token is missing, invalid or expired, ' +
+      'or the user is missing or not `active`. Log in again.',
+  )
+  @ApiRateLimitResponse('over 30 requests per IP per minute.')
+  @ApiLoginUnavailableResponse(
+    'the database or token signing failed. The old refresh cookie still ' +
+      'works for a retry.',
+  )
   async refresh(
     @Req() request: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
@@ -201,6 +319,25 @@ export class AuthController {
   @Post('logout')
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Log out',
+    description:
+      'Needs no valid token. Nothing is revoked on the server (the tokens ' +
+      'are stateless): the browser only deletes its cookies.',
+  })
+  @ApiAuthPost()
+  @ApiNoContentResponse({
+    description:
+      'Always. No body. Clears both cookies (`Max-Age=0`, same `Path` as ' +
+      'when they were set).',
+    headers: {
+      'Set-Cookie': {
+        description:
+          'Two headers that clear `access_token` and `refresh_token`.',
+        schema: { type: 'string' },
+      },
+    },
+  })
   logout(
     @Req() request: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,

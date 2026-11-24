@@ -1,16 +1,13 @@
 import type { CookieSerializeOptions } from '@fastify/cookie';
 import type { FastifyReply } from 'fastify';
 import type { AuthCookieSameSite } from '@/core/config/config.types';
-import { ACCESS_TOKEN_COOKIE } from '@/core/http/openapi';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '@/core/http/openapi';
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   REFRESH_TOKEN_TTL_SECONDS,
 } from './token.types';
 
-export { ACCESS_TOKEN_COOKIE };
-
-/** The cookie that carries the refresh token (`task.md`, Authentication). */
-export const REFRESH_TOKEN_COOKIE = 'refresh_token';
+export { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE };
 
 /**
  * The browser sends the refresh cookie only to this path, so it never travels

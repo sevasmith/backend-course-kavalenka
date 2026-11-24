@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { IsUUID } from 'class-validator';
 
 /**
@@ -5,6 +6,10 @@ import { IsUUID } from 'class-validator';
  * email come from the saved attempt and its user, never from the client.
  */
 export class ResendLoginDto {
+  @ApiProperty({
+    format: 'uuid',
+    description: 'From the 202 of `POST /auth/login`.',
+  })
   @IsUUID(undefined, { message: 'attemptId must be a UUID' })
   attemptId: string;
 }
