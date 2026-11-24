@@ -85,11 +85,25 @@ describe('Access check (e2e)', () => {
     );
   });
 
-  it('answers 401 at once when the user is blocked', async () => {
+  // The token is still valid: only the status read on every request stops it.
+  it.each(['pending', 'blocked', 'deleting', 'deleted'])(
+    'answers 401 at once when the user becomes %s',
+    async (status) => {
+      const { email, accessCookie } = await loginAsNewUser();
+      await db.query(`UPDATE users SET status = $1 WHERE email = $2`, [
+        status,
+        email,
+      ]);
+
+      expectInvalidSession(
+        await http().get(protectedUrl).set('Cookie', accessCookie),
+      );
+    },
+  );
+
+  it('answers 401 once the user row is gone', async () => {
     const { email, accessCookie } = await loginAsNewUser();
-    await db.query(`UPDATE users SET status = 'blocked' WHERE email = $1`, [
-      email,
-    ]);
+    await db.query(`DELETE FROM users WHERE email = $1`, [email]);
 
     expectInvalidSession(
       await http().get(protectedUrl).set('Cookie', accessCookie),

@@ -44,6 +44,18 @@ describe('Login IP rate limit (e2e)', () => {
     ).toBeGreaterThanOrEqual(1);
   });
 
+  // Same limit, own counter per route. No cookie: 401, but it still counts.
+  it('returns 429 on refresh after the configured number of requests', async () => {
+    await post('/auth/refresh').expect(401);
+    await post('/auth/refresh').expect(401);
+
+    const res = await post('/auth/refresh').expect(429);
+    expect(res.body).toMatchObject({
+      statusCode: 429,
+      code: 'rate_limit_exceeded',
+    });
+  });
+
   it('does not apply to register', async () => {
     for (let i = 0; i < 3; i++) {
       await post('/auth/register').expect(400);

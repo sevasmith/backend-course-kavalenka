@@ -70,6 +70,26 @@ describe('CSRF and CORS (e2e)', () => {
       );
     });
 
+    // The check runs before validation, so an empty body is enough.
+    it.each([
+      '/auth/register',
+      '/auth/register/confirm',
+      '/auth/register/resend',
+      '/auth/login',
+      '/auth/login/confirm',
+      '/auth/login/resend',
+      '/auth/refresh',
+      '/auth/logout',
+    ])('rejects POST %s from an untrusted origin', async (path) => {
+      expectCsrfRejected(
+        await http()
+          .post(path)
+          .set('Origin', untrusted)
+          .set('X-CSRF-Protection', '1')
+          .send({}),
+      );
+    });
+
     it('rejects a trusted origin without the CSRF header', async () => {
       expectCsrfRejected(
         await http().post('/auth/logout').set('Origin', trusted),
