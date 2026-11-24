@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsEmail, MaxLength } from 'class-validator';
 
@@ -6,6 +7,12 @@ import { IsEmail, MaxLength } from 'class-validator';
  * stored address.
  */
 export class ResendRegistrationDto {
+  @ApiProperty({
+    format: 'email',
+    maxLength: 254,
+    example: 'user@example.com',
+    description: 'Trimmed and lowercased before validation.',
+  })
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim().toLowerCase() : value,
   )

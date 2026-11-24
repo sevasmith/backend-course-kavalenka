@@ -6,6 +6,12 @@ import { PasswordService } from './password.service';
 import { AuthService } from './auth.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { LoginChallenge } from './login-challenge.entity';
+import { LoginChallengeService } from './login-challenge.service';
+import { TokenService } from './token.service';
+import { LoginAttemptLimiter } from './login-attempt-limiter';
+import { AccessCheckGuard } from './access-check.guard';
+import { AuditIdService } from './audit-id.service';
 import { UsersModule } from '../users/users.module';
 import { RbacModule } from '../rbac/rbac.module';
 
@@ -14,9 +20,20 @@ import { RbacModule } from '../rbac/rbac.module';
     UsersModule,
     RbacModule,
     MailModule,
-    TypeOrmModule.forFeature([RegistrationChallenge]),
+    TypeOrmModule.forFeature([RegistrationChallenge, LoginChallenge]),
   ],
   controllers: [AuthController],
-  providers: [PasswordService, AuthService, RegistrationChallengeService],
+  providers: [
+    PasswordService,
+    AuthService,
+    RegistrationChallengeService,
+    LoginChallengeService,
+    TokenService,
+    LoginAttemptLimiter,
+    AccessCheckGuard,
+    AuditIdService,
+  ],
+  // Registered as a global guard in `AppModule`, before `RbacGuard`.
+  exports: [AccessCheckGuard],
 })
 export class AuthModule {}

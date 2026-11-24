@@ -14,7 +14,7 @@ import { UserRolesBodyDto, UserRolesResponse } from './dto/user-roles.dto';
 import { RbacUserRolesService } from './rbac-user-roles.service';
 import { ActorUserId, RequirePermission } from './rbac.decorators';
 import { RbacAdminAuditInterceptor } from './rbac-admin-audit.interceptor';
-import { ApiRbacAdmin, ApiUuidParam } from './rbac-api-docs';
+import { ApiRbacAdmin, ApiRbacWrite, ApiUuidParam } from './rbac-api-docs';
 import { AuditTarget } from './rbac-audit.logger';
 
 /** A user's roles. Every route needs `rbac@manage`. */
@@ -39,6 +39,7 @@ export class RbacUserRolesController {
   }
 
   @Put()
+  @ApiRbacWrite()
   @ApiOperation({
     summary: "Replace a user's roles",
     description: 'Full replacement: `roleIds` is the complete new set.',

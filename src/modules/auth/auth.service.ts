@@ -6,26 +6,56 @@ import {
   Injectable,
   Logger,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Transactional } from 'typeorm-transactional';
 import { ConfigService } from '@/core/config/config.service';
 import { MailService } from '@/core/mail/mail.service';
+import { apiError, ErrorCode } from '@/core/http/api-error';
 import { PasswordService } from './password.service';
 import { UsersService } from '../users/users.service';
 import { RbacDefaultRoleService } from '../rbac/rbac-default-role.service';
 import { RegisterDto } from './dto/register.dto';
 import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
 import { ResendRegistrationDto } from './dto/resend-registration.dto';
+import { LoginDto } from './dto/login.dto';
+import { ConfirmLoginDto } from './dto/confirm-login.dto';
+import { ResendLoginDto } from './dto/resend-login.dto';
 import {
+  AuthTokens,
   ConfirmationOutcome,
   ConfirmRegistrationResult,
+  INVALID_CREDENTIALS_MESSAGE,
+  INVALID_SESSION_MESSAGE,
+  LoginConfirmationOutcome,
+  LoginConfirmationRequired,
+  LoginResendOutcome,
+  LoginResendResult,
+  LoginResult,
+  LoginUser,
   RegisterPendingResult,
   RegisterResult,
 } from './auth.types';
 import { User } from '../users/user.entity';
 import { UserStatus } from '../users/user.types';
 import { RegistrationChallengeService } from './registration-challenge.service';
+import { TokenService } from './token.service';
+import { LoginAttemptLimiter, LoginAttemptSlot } from './login-attempt-limiter';
+import { AuditIdService } from './audit-id.service';
 import { RegistrationChallenge } from './registration-challenge.entity';
+import { LoginChallengeService } from './login-challenge.service';
+import { LoginChallenge } from './login-challenge.entity';
+import {
+  CreatedLoginChallenge,
+  INVALID_LOGIN_CONFIRMATION_MESSAGE,
+  LOGIN_ATTEMPTS_EXHAUSTED_MESSAGE,
+  LOGIN_CHALLENGE_MAX_ATTEMPTS,
+  LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
+  LOGIN_CHALLENGE_TTL_SECONDS,
+  LOGIN_EMAIL_TOO_SOON_MESSAGE,
+  LoginChallengeConsumedReason,
+  LoginChallengeMethod,
+} from './login-challenge.types';
 import {
   INVALID_REGISTRATION_CONFIRMATION_MESSAGE,
   REGISTRATION_ATTEMPTS_EXHAUSTED_MESSAGE,
@@ -58,6 +88,10 @@ export class AuthService {
     private readonly registrationChallengeService: RegistrationChallengeService,
     private readonly mailService: MailService,
     private readonly defaultRoleService: RbacDefaultRoleService,
+    private readonly tokenService: TokenService,
+    private readonly loginAttemptLimiter: LoginAttemptLimiter,
+    private readonly loginChallengeService: LoginChallengeService,
+    private readonly auditIdService: AuditIdService,
   ) {}
 
   /**
@@ -97,6 +131,744 @@ export class AuthService {
         this.logger.warn('Registration rejected, reason=email_taken');
       }
       throw error;
+    }
+  }
+
+  /**
+   * `POST /auth/login`. After the password check:
+   * - `LOGIN_EMAIL_CONFIRMATION_ENABLED=false`: the token pair (204 + cookies);
+   * - `true`: a login attempt and an email, no tokens yet (202).
+   */
+  async login(dto: LoginDto, ip: string): Promise<LoginResult> {
+    // Before the hash: a blocked pair costs no Argon2 work.
+    let slot: LoginAttemptSlot;
+    try {
+      slot = this.loginAttemptLimiter.reserve(dto.email, ip);
+    } catch (error) {
+      // The limit is per email, so the log uses the email's id even for a
+      // known user: no lookup is made for a blocked pair.
+      this.logger.warn(
+        `Login rejected, reason=failure_limit, emailId=${this.auditIdService.forEmail(dto.email)}`,
+      );
+      throw error;
+    }
+
+    let user: LoginUser;
+    try {
+      user = await this.checkCredentials(dto);
+    } catch (error) {
+      // Only a wrong login counts (`checkCredentials` logged its reason).
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      // Anything else (e.g. the database is down) is not the client's
+      // fault: the slot is given back and the answer is 503, not 500.
+      this.loginAttemptLimiter.release(slot);
+      this.logger.error(
+        `Login failed, reason=database: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
+
+    this.loginAttemptLimiter.reset(slot);
+
+    // Read per request: a config change applies only to new logins, while an
+    // issued attempt keeps its own method.
+    if (this.configService.get('LOGIN_EMAIL_CONFIRMATION_ENABLED')) {
+      return this.startLoginConfirmation(user.id, dto.email);
+    }
+    const tokens = this.signTokens(user.id);
+    this.logger.log(`Login succeeded, method=password, userId=${user.id}`);
+    return tokens;
+  }
+
+  /**
+   * `POST /auth/logout` only logs: the controller clears the cookies, and
+   * nothing is stored on the server. The access token is read only to name
+   * the user in the log; an invalid or missing one changes nothing.
+   */
+  logout(accessToken: string | undefined): void {
+    const verification = this.tokenService.verifyAccess(accessToken);
+    this.logger.log(
+      `Logout, userId=${verification.ok ? verification.userId : 'unknown'}`,
+    );
+  }
+
+  /**
+   * The second login step. The 429 pre-check runs without a lock, so a
+   * client that clicks "log in" again too soon costs no transaction; the
+   * transaction repeats the check under the lock, which is what makes it safe.
+   *
+   * The email goes out only after the commit. If it fails, the attempt stays
+   * and the client gets a 503 with the attempt fields (never the secret):
+   * the retry is a resend or a new login after the same 60-second pause.
+   */
+  private async startLoginConfirmation(
+    userId: string,
+    email: string,
+  ): Promise<LoginConfirmationRequired> {
+    let created: CreatedLoginChallenge;
+    try {
+      const previous =
+        await this.loginChallengeService.findActiveForUser(userId);
+      if (previous) {
+        this.rejectLoginEmailIfTooSoon(previous);
+      }
+      created = await this.replaceLoginChallenge(userId);
+    } catch (error) {
+      // 401 and 429 are answers; anything else means the attempt was not
+      // committed (e.g. the database is down) and no email was sent.
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      this.logger.error(
+        `Login attempt not created, userId=${userId}: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
+
+    const result = toLoginConfirmationRequired(created.challenge);
+    this.logger.log(
+      `Login attempt created, method=${result.method}, attemptId=${result.attemptId}, userId=${userId}`,
+    );
+    await this.sendLoginEmail(
+      email,
+      { method: result.method, attemptId: result.attemptId, userId },
+      created.secret,
+    );
+    return result;
+  }
+
+  /**
+   * One transaction. Locks the user, then the user's open attempt: the order
+   * every login-attempt transaction uses (confirm and resend too), so two of
+   * them can never wait for each other in a cycle (a deadlock).
+   *
+   * Under the lock it rechecks what the password check saw: the user is still
+   * `active` (a block between the two would otherwise still get an email) and
+   * the 60-second pause (a parallel login may have just sent an email).
+   * Rejections happen before any write, so throwing here rolls back nothing.
+   *
+   * The old attempt is consumed as `replaced` before the insert: the partial
+   * unique index allows only one unconsumed attempt per user.
+   */
+  @Transactional()
+  private async replaceLoginChallenge(
+    userId: string,
+  ): Promise<CreatedLoginChallenge> {
+    const user = await this.usersService.findByIdForUpdate(userId);
+    if (user?.status !== UserStatus.ACTIVE) {
+      this.logger.warn(
+        `Login attempt rejected, reason=user_inactive, userId=${userId}`,
+      );
+      throw new UnauthorizedException(
+        apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+      );
+    }
+
+    const previous =
+      await this.loginChallengeService.findActiveForUserForUpdate(userId);
+    if (previous) {
+      this.rejectLoginEmailIfTooSoon(previous);
+      await this.loginChallengeService.consume(
+        previous,
+        LoginChallengeConsumedReason.REPLACED,
+      );
+      this.logger.log(
+        `Login attempt replaced, oldAttemptId=${previous.id}, userId=${userId}`,
+      );
+    }
+
+    // The server picks the method; the client never chooses it.
+    const method = this.configService.get('LOGIN_EMAIL_CONFIRMATION_METHOD');
+    return this.loginChallengeService.create(userId, method);
+  }
+
+  /**
+   * 429 with `retryAfterSeconds` while `last_sent_at + 60 s` is in the
+   * future: no new attempt, no email.
+   */
+  private rejectLoginEmailIfTooSoon(challenge: LoginChallenge): void {
+    const retryAfterSeconds =
+      this.loginChallengeService.secondsUntilResend(challenge);
+    if (retryAfterSeconds === 0) {
+      return;
+    }
+
+    this.logger.warn(
+      `Login attempt rejected, reason=too_soon, method=${challenge.method}, ` +
+        `attemptId=${challenge.id}, ` +
+        `userId=${challenge.userId}, retryAfterSeconds=${retryAfterSeconds}`,
+    );
+    throw new HttpException(
+      apiError(ErrorCode.RATE_LIMIT_EXCEEDED, LOGIN_EMAIL_TOO_SOON_MESSAGE, {
+        retryAfterSeconds,
+      }),
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  /**
+   * Never logs the email, the secret or the link: only ids and the method.
+   * `userId` is only for the log (1.2 §1.5: a known user's events name them).
+   */
+  private async sendLoginEmail(
+    email: string,
+    {
+      method,
+      attemptId,
+      userId,
+    }: Pick<LoginConfirmationRequired, 'method' | 'attemptId'> & {
+      userId: string;
+    },
+    secret: string,
+  ): Promise<void> {
+    try {
+      if (method === LoginChallengeMethod.OTP) {
+        await this.mailService.sendLoginOtp(email, secret);
+      } else {
+        await this.mailService.sendLoginMagicLink(
+          email,
+          this.buildLoginMagicLink(attemptId, secret),
+        );
+      }
+    } catch (error) {
+      // The code only: an SMTP error message can quote the recipient's
+      // address (e.g. "550 <user@example.com>: Recipient rejected").
+      const { code, name } = error as Error & { code?: string };
+      this.logger.error(
+        `Login email failed, method=${method}, attemptId=${attemptId}, userId=${userId}: ${code ?? name}`,
+      );
+      // The attempt is committed: the client can resend after the pause.
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Confirmation email could not be sent',
+          {
+            confirmationRequired: true,
+            method,
+            attemptId,
+            retryAfterSeconds: LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
+          },
+        ),
+      );
+    }
+
+    this.logger.log(
+      `Login email sent, method=${method}, attemptId=${attemptId}, userId=${userId}`,
+    );
+  }
+
+  /**
+   * Unlike registration, the token is `attemptId.secret`: confirm finds the
+   * attempt by its id. It goes into the fragment (#), which browsers never
+   * send to the server, so opening the link changes nothing by itself.
+   */
+  private buildLoginMagicLink(attemptId: string, secret: string): string {
+    const url = new URL(this.configService.get('LOGIN_CONFIRM_URL')!);
+    url.hash = this.loginChallengeService.buildMagicLinkToken(
+      attemptId,
+      secret,
+    );
+    return url.toString();
+  }
+
+  /**
+   * The password check of `POST /auth/login`. An unknown email, a wrong
+   * password and any status other than `active` throw the same 401, so the
+   * response never tells whether the account exists or what state it is in.
+   *
+   * An unknown email still runs a full Argon2 check (against the dummy hash),
+   * so it takes about as long as a wrong password. The status is checked
+   * after the password, so a wrong password for a blocked user and for an
+   * active user follow the same path.
+   */
+  async checkCredentials(dto: LoginDto): Promise<LoginUser> {
+    const user = await this.usersService.findByEmail(dto.email);
+
+    const passwordMatches = user
+      ? await this.passwordService.verify(user.passwordHash, dto.password)
+      : await this.passwordService.verifyDummy(dto.password);
+
+    // The reason goes only to the log; the client gets the same 401.
+    if (!user) {
+      this.rejectLogin(
+        `reason=unknown_email, emailId=${this.auditIdService.forEmail(dto.email)}`,
+      );
+    }
+    if (!passwordMatches) {
+      this.rejectLogin(`reason=wrong_password, userId=${user.id}`);
+    }
+    if (user.status !== UserStatus.ACTIVE) {
+      this.rejectLogin(`reason=user_${user.status}, userId=${user.id}`);
+    }
+
+    return { id: user.id };
+  }
+
+  /** Logs who and why (never the email itself) and throws the shared 401. */
+  private rejectLogin(details: string): never {
+    this.logger.warn(`Login rejected, ${details}`);
+    throw new UnauthorizedException(
+      apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+    );
+  }
+
+  /**
+   * Signs both tokens before anything is sent: if either fails, the caller
+   * gets a 503 and sets no cookies, so the client never holds half a pair.
+   * Refresh (task 13) and the login confirmation (task 11) reuse this.
+   */
+  private signTokens(userId: string): AuthTokens {
+    try {
+      return {
+        accessToken: this.tokenService.signAccess(userId),
+        refreshToken: this.tokenService.signRefresh(userId),
+      };
+    } catch (error) {
+      // Only the error name: the message could contain claims or key details.
+      this.logger.error(
+        `Token signing failed, userId=${userId}: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
+  }
+
+  /**
+   * `POST /auth/refresh`: a new token pair for a valid refresh token whose
+   * user still exists and is `active` (1.2 §1.3.4).
+   *
+   * Stateless rotation: nothing is stored or revoked, so the used refresh
+   * token stays valid until its own `exp`. Reading the user on every refresh
+   * is what stops a blocked or deleted user.
+   *
+   * - bad token, missing or non-active user: one 401 `invalid_session`, the
+   *   reason only in the log;
+   * - database down: 503, not 401 (the session may be fine);
+   * - signing fails: 503 from `signTokens`, so no cookies are set and the old
+   *   refresh cookie still works for a retry.
+   */
+  async refresh(refreshToken: string | undefined): Promise<AuthTokens> {
+    const verification = this.tokenService.verifyRefresh(refreshToken);
+    if (!verification.ok) {
+      this.rejectRefresh(verification.reason);
+    }
+
+    const { userId } = verification;
+    let user: Pick<User, 'id' | 'status'> | null;
+    try {
+      user = await this.usersService.findStatusById(userId);
+    } catch (error) {
+      this.logger.error(
+        `Refresh failed, reason=database, userId=${userId}: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Session refresh is temporarily unavailable',
+        ),
+      );
+    }
+
+    if (!user) {
+      this.rejectRefresh('user_missing', userId);
+    }
+    if (user.status !== UserStatus.ACTIVE) {
+      this.rejectRefresh(`user_${user.status}`, userId);
+    }
+
+    const tokens = this.signTokens(userId);
+    this.logger.log(`Refresh succeeded, userId=${userId}`);
+    return tokens;
+  }
+
+  /** Logs the reason (never the token) and throws the shared 401. */
+  private rejectRefresh(reason: string, userId?: string): never {
+    this.logger.warn(
+      `Refresh rejected, reason=${reason}, userId=${userId ?? 'unknown'}`,
+    );
+    throw new UnauthorizedException(
+      apiError(ErrorCode.INVALID_SESSION, INVALID_SESSION_MESSAGE),
+    );
+  }
+
+  /**
+   * `POST /auth/login/confirm`. The checks and writes run in
+   * `applyLoginConfirmation` (one transaction); this method turns its outcome
+   * into a response only after the commit, so the wrong-code counter and the
+   * `user_inactive` consumption are saved even though the client gets an error.
+   *
+   * The tokens are returned only after the commit: if the commit fails, no
+   * cookies are set and the attempt (rolled back) can be confirmed again.
+   */
+  async confirmLogin(dto: ConfirmLoginDto): Promise<AuthTokens> {
+    let outcome: LoginConfirmationOutcome;
+    try {
+      outcome = await this.applyLoginConfirmation(dto);
+    } catch (error) {
+      // The 503 of a failed signature is already an answer.
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      this.logger.error(
+        `Login confirmation failed, reason=database: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
+
+    if (outcome.confirmed) {
+      this.logger.log(
+        `Login confirmed, method=${outcome.method}, attemptId=${outcome.attemptId}, userId=${outcome.userId}`,
+      );
+      return outcome.tokens;
+    }
+
+    const { reason, attemptId, userId, method, attempts } = outcome;
+    this.logger.warn(
+      `Login confirmation rejected, reason=${reason}, method=${method ?? 'unknown'}, ` +
+        `attemptId=${attemptId ?? 'unknown'}, userId=${userId ?? 'unknown'}` +
+        (attempts !== undefined
+          ? `, attempts=${attempts}/${LOGIN_CHALLENGE_MAX_ATTEMPTS}`
+          : ''),
+    );
+
+    if (reason === 'attempts_exhausted') {
+      throw new HttpException(
+        apiError(
+          ErrorCode.RATE_LIMIT_EXCEEDED,
+          LOGIN_ATTEMPTS_EXHAUSTED_MESSAGE,
+        ),
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    if (reason === 'user_inactive') {
+      throw new UnauthorizedException(
+        apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+      );
+    }
+    throw new BadRequestException(
+      apiError(ErrorCode.BAD_REQUEST, INVALID_LOGIN_CONFIRMATION_MESSAGE),
+    );
+  }
+
+  /**
+   * One transaction, in the order of 1.2 §1.3.2:
+   * 1. Read the attempt without a lock, only to learn `user_id`.
+   * 2. Lock the user, then the attempt (the order of every login-attempt
+   *    transaction, so they never deadlock), and re-read the attempt: a
+   *    parallel request may have changed it while we waited.
+   * 3. Consumed (429 for `attempts_exhausted`, else 400) and expired (400,
+   *    no counter) are rejected before the user and the secret are checked.
+   * 4. A user who is gone or not `active` consumes it as `user_inactive`.
+   * 5. Only then the secret: a wrong OTP is counted, a wrong link is not.
+   * 6. On a match, sign both tokens first (a failure throws and rolls back),
+   *    then consume the attempt as `confirmed`.
+   *
+   * The method comes from the saved attempt, not from the config.
+   */
+  @Transactional()
+  private async applyLoginConfirmation(
+    dto: ConfirmLoginDto,
+  ): Promise<LoginConfirmationOutcome> {
+    const target = this.parseLoginConfirmation(dto);
+    if (!target) {
+      return { confirmed: false, reason: 'not_found' };
+    }
+
+    const found = await this.loginChallengeService.findById(target.attemptId);
+    if (!found) {
+      return {
+        confirmed: false,
+        reason: 'not_found',
+        attemptId: target.attemptId,
+      };
+    }
+
+    const userId = found.userId;
+    const user = await this.usersService.findByIdForUpdate(userId);
+    const challenge = await this.loginChallengeService.findByIdForUpdate(
+      found.id,
+    );
+    if (!challenge) {
+      return { confirmed: false, reason: 'not_found', attemptId: found.id };
+    }
+
+    const attemptId = challenge.id;
+    // The saved method, for the log (1.2 §1.5): never the one the client sent.
+    const method = challenge.method;
+
+    // A code sent for a magic link attempt (or a token for an OTP one).
+    if (challenge.method !== target.method) {
+      return {
+        confirmed: false,
+        reason: 'wrong_method',
+        attemptId,
+        userId,
+        method,
+      };
+    }
+
+    if (challenge.consumedAt !== null) {
+      const reason =
+        challenge.consumedReason ===
+        LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED
+          ? 'attempts_exhausted'
+          : 'consumed';
+      return { confirmed: false, reason, attemptId, userId, method };
+    }
+
+    // `last_sent_at + 10 min`. Rejected without counting an entry.
+    if (this.loginChallengeService.isExpired(challenge)) {
+      return { confirmed: false, reason: 'expired', attemptId, userId, method };
+    }
+
+    // Blocked or deleted after the password check: the attempt can never
+    // succeed, so it is closed for good.
+    if (user?.status !== UserStatus.ACTIVE) {
+      await this.loginChallengeService.consume(
+        challenge,
+        LoginChallengeConsumedReason.USER_INACTIVE,
+      );
+      return {
+        confirmed: false,
+        reason: 'user_inactive',
+        attemptId,
+        userId,
+        method,
+      };
+    }
+
+    if (!this.loginChallengeService.secretMatches(challenge, target.secret)) {
+      // A 6-digit code can be guessed, so it is counted; 32 random bytes
+      // cannot, so a wrong link is not.
+      if (challenge.method === LoginChallengeMethod.OTP) {
+        const { attempts } =
+          await this.loginChallengeService.registerWrongOtp(challenge);
+        return {
+          confirmed: false,
+          reason: 'wrong_secret',
+          attemptId,
+          userId,
+          method,
+          attempts,
+        };
+      }
+      return {
+        confirmed: false,
+        reason: 'wrong_secret',
+        attemptId,
+        userId,
+        method,
+      };
+    }
+
+    const tokens = this.signTokens(userId);
+    await this.loginChallengeService.consume(
+      challenge,
+      LoginChallengeConsumedReason.CONFIRMED,
+    );
+    return { confirmed: true, attemptId, userId, method, tokens };
+  }
+
+  /**
+   * Which attempt, which secret and which method the body is for. Null for a
+   * token that is not `attemptId.secret`: the same 400 as an unknown attempt,
+   * without a database query.
+   */
+  private parseLoginConfirmation(dto: ConfirmLoginDto): {
+    attemptId: string;
+    secret: string;
+    method: LoginChallengeMethod;
+  } | null {
+    if (dto.token !== undefined) {
+      const parsed = this.loginChallengeService.parseMagicLinkToken(dto.token);
+      return parsed && { ...parsed, method: LoginChallengeMethod.MAGIC_LINK };
+    }
+    return {
+      attemptId: dto.attemptId!,
+      secret: dto.code!,
+      method: LoginChallengeMethod.OTP,
+    };
+  }
+
+  /**
+   * `POST /auth/login/resend`. The checks and the new secret are committed
+   * in `applyLoginResend`; the email goes out only after the commit. If SMTP
+   * fails, the new hash stays (the old secret is not restored) and the next
+   * resend is possible after 60 seconds.
+   */
+  async resendLogin(dto: ResendLoginDto): Promise<LoginResendResult> {
+    let outcome: LoginResendOutcome;
+    try {
+      outcome = await this.applyLoginResend(dto.attemptId);
+    } catch (error) {
+      this.logger.error(
+        `Login resend failed, reason=database, attemptId=${dto.attemptId}: ${(error as Error).name}`,
+      );
+      throw new ServiceUnavailableException(
+        apiError(
+          ErrorCode.SERVICE_UNAVAILABLE,
+          'Login is temporarily unavailable',
+        ),
+      );
+    }
+
+    if (!outcome.resent) {
+      this.rejectLoginResend(outcome);
+    }
+
+    const { challenge, secret, email } = outcome;
+    this.logger.log(
+      `Login attempt resent, method=${challenge.method}, attemptId=${challenge.id}, userId=${challenge.userId}`,
+    );
+    await this.sendLoginEmail(
+      email,
+      {
+        method: challenge.method,
+        attemptId: challenge.id,
+        userId: challenge.userId,
+      },
+      secret,
+    );
+
+    return {
+      method: challenge.method,
+      attemptId: challenge.id,
+      expiresInSeconds: LOGIN_CHALLENGE_TTL_SECONDS,
+      resendAfterSeconds: LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
+    };
+  }
+
+  /**
+   * One transaction, in the order of 1.2 §1.3.2 (resend):
+   * 1. Read the attempt without a lock, only to learn `user_id`.
+   * 2. Lock the user, then the attempt, and re-read it.
+   * 3. Consumed: 429 for `attempts_exhausted`, else 400. An expired TTL is
+   *    fine: resend is how an expired attempt gets a new secret.
+   * 4. A user who is gone or not `active` consumes it as `user_inactive`.
+   * 5. The 60-second pause, counted from `last_sent_at`.
+   * 6. A new secret of the saved method in the same row.
+   */
+  @Transactional()
+  private async applyLoginResend(
+    attemptId: string,
+  ): Promise<LoginResendOutcome> {
+    const found = await this.loginChallengeService.findById(attemptId);
+    if (!found) {
+      return { resent: false, reason: 'not_found', attemptId };
+    }
+
+    const userId = found.userId;
+    const user = await this.usersService.findByIdForUpdate(userId);
+    const challenge =
+      await this.loginChallengeService.findByIdForUpdate(attemptId);
+    if (!challenge) {
+      return { resent: false, reason: 'not_found', attemptId };
+    }
+    // The saved method, for the log (1.2 §1.5).
+    const method = challenge.method;
+
+    if (challenge.consumedAt !== null) {
+      const reason =
+        challenge.consumedReason ===
+        LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED
+          ? 'attempts_exhausted'
+          : 'consumed';
+      return { resent: false, reason, attemptId, userId, method };
+    }
+
+    if (user?.status !== UserStatus.ACTIVE) {
+      await this.loginChallengeService.consume(
+        challenge,
+        LoginChallengeConsumedReason.USER_INACTIVE,
+      );
+      return {
+        resent: false,
+        reason: 'user_inactive',
+        attemptId,
+        userId,
+        method,
+      };
+    }
+
+    const retryAfterSeconds =
+      this.loginChallengeService.secondsUntilResend(challenge);
+    if (retryAfterSeconds > 0) {
+      return {
+        resent: false,
+        reason: 'too_soon',
+        attemptId,
+        userId,
+        method,
+        retryAfterSeconds,
+      };
+    }
+
+    const { challenge: rotated, secret } =
+      await this.loginChallengeService.rotateSecret(challenge);
+    return { resent: true, challenge: rotated, secret, email: user.email };
+  }
+
+  /** Logs the reason and throws the response for a rejected resend. */
+  private rejectLoginResend(
+    outcome: Extract<LoginResendOutcome, { resent: false }>,
+  ): never {
+    const { reason, attemptId, userId, method, retryAfterSeconds } = outcome;
+    this.logger.warn(
+      `Login resend rejected, reason=${reason}, method=${method ?? 'unknown'}, ` +
+        `attemptId=${attemptId}, ` +
+        `userId=${userId ?? 'unknown'}` +
+        (retryAfterSeconds !== undefined
+          ? `, retryAfterSeconds=${retryAfterSeconds}`
+          : ''),
+    );
+
+    switch (reason) {
+      case 'too_soon':
+        throw new HttpException(
+          apiError(
+            ErrorCode.RATE_LIMIT_EXCEEDED,
+            LOGIN_EMAIL_TOO_SOON_MESSAGE,
+            { retryAfterSeconds: retryAfterSeconds! },
+          ),
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      case 'attempts_exhausted':
+        throw new HttpException(
+          apiError(
+            ErrorCode.RATE_LIMIT_EXCEEDED,
+            LOGIN_ATTEMPTS_EXHAUSTED_MESSAGE,
+          ),
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      case 'user_inactive':
+        throw new UnauthorizedException(
+          apiError(ErrorCode.INVALID_CREDENTIALS, INVALID_CREDENTIALS_MESSAGE),
+        );
+      default:
+        throw new BadRequestException(
+          apiError(ErrorCode.BAD_REQUEST, INVALID_LOGIN_CONFIRMATION_MESSAGE),
+        );
     }
   }
 
@@ -403,9 +1175,10 @@ export class AuthService {
     } catch (error) {
       // Nodemailer's `code` (e.g. ESOCKET) is the useful part: a refused
       // connection is an AggregateError with an empty message.
-      const { code, message } = error as Error & { code?: string };
+      // The code only: the message can quote the recipient's address.
+      const { code, name } = error as Error & { code?: string };
       this.logger.error(
-        `Registration email failed, method=${method}, attemptId=${attemptId}: ${code ?? 'unknown'} ${message}`,
+        `Registration email failed, method=${method}, attemptId=${attemptId}: ${code ?? name}`,
       );
       throw new ServiceUnavailableException(
         'Confirmation email could not be sent',
@@ -441,5 +1214,21 @@ function toPendingResult(
     attemptId: challenge.id,
     expiresInSeconds: REGISTRATION_CHALLENGE_TTL_SECONDS,
     resendAfterSeconds: REGISTRATION_CHALLENGE_RESEND_AFTER_SECONDS,
+  };
+}
+
+/**
+ * The 202 body of a login that needs the email step. The secret is never
+ * part of it.
+ */
+function toLoginConfirmationRequired(
+  challenge: LoginChallenge,
+): LoginConfirmationRequired {
+  return {
+    confirmationRequired: true,
+    method: challenge.method,
+    attemptId: challenge.id,
+    expiresInSeconds: LOGIN_CHALLENGE_TTL_SECONDS,
+    resendAfterSeconds: LOGIN_CHALLENGE_RESEND_AFTER_SECONDS,
   };
 }

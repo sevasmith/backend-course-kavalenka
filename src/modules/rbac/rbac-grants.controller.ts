@@ -23,7 +23,7 @@ import { GrantBodyDto, GrantResponse } from './dto/grant.dto';
 import { RbacGrantsService } from './rbac-grants.service';
 import { ActorUserId, RequirePermission } from './rbac.decorators';
 import { RbacAdminAuditInterceptor } from './rbac-admin-audit.interceptor';
-import { ApiRbacAdmin, ApiUuidParam } from './rbac-api-docs';
+import { ApiRbacAdmin, ApiRbacWrite, ApiUuidParam } from './rbac-api-docs';
 import { AuditTarget } from './rbac-audit.logger';
 
 const BAD_ACTION =
@@ -47,6 +47,7 @@ export class RbacGrantsController {
   }
 
   @Post()
+  @ApiRbacWrite()
   @ApiOperation({
     summary: 'Grant a role a permission',
     description:
@@ -68,6 +69,7 @@ export class RbacGrantsController {
   }
 
   @Put(':grantId')
+  @ApiRbacWrite()
   @ApiOperation({
     summary: 'Replace a grant',
     description:
@@ -94,6 +96,7 @@ export class RbacGrantsController {
   }
 
   @Delete(':grantId')
+  @ApiRbacWrite()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete a grant' })
   @ApiUuidParam('grantId')

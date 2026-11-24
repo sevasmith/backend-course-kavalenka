@@ -1,14 +1,14 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-import {
-  ThrottlerGuard,
-  ThrottlerModule as NestThrottlerModule,
-} from '@nestjs/throttler';
+import { ThrottlerModule as NestThrottlerModule } from '@nestjs/throttler';
 
 import { ConfigModule } from '@/core/config/config.module';
 import { ConfigService } from '@/core/config/config.service';
+import { ApiThrottlerGuard } from './api-throttler.guard';
 import {
+  isLoginThrottled,
   isRegistrationThrottled,
+  LOGIN_THROTTLER,
   REGISTRATION_THROTTLER,
 } from './throttler.decorators';
 
@@ -36,6 +36,13 @@ import {
             limit: Number(config.get('THROTTLE_REGISTRATION_LIMIT')),
             skipIf: (context) => !isRegistrationThrottled(context),
           },
+          /** Skipped unless the route has `@LoginThrottle()`. */
+          {
+            name: LOGIN_THROTTLER,
+            ttl: Number(config.get('THROTTLE_LOGIN_TTL')),
+            limit: Number(config.get('THROTTLE_LOGIN_LIMIT')),
+            skipIf: (context) => !isLoginThrottled(context),
+          },
         ];
       },
     }),
@@ -43,9 +50,9 @@ import {
   providers: [
     /**
      * Without a guard the limits above are never checked. The guard counts
-     * per IP and per route, in process memory.
+     * per IP and per route, in process memory, and answers with our 429 body.
      */
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: ApiThrottlerGuard },
   ],
   exports: [NestThrottlerModule],
 })

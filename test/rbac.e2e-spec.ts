@@ -2,8 +2,9 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { DataSource } from 'typeorm';
 
+import { TokenService } from '../src/modules/auth/token.service';
 import { RbacAuthorizationService } from '../src/modules/rbac/rbac-authorization.service';
-import { createTestApp, TEST_USER_HEADER } from './create-test-app';
+import { createTestApp } from './create-test-app';
 import { createTestDatabase, dropTestDatabase } from './test-database';
 
 /**
@@ -46,18 +47,15 @@ describe('RBAC (e2e)', () => {
     aliceId = await insertUser('active');
     pendingId = await insertUser('pending');
 
-    ({ app } = await createTestApp(
-      {
-        POSTGRES_DB: DB_NAME,
-        RBAC_BOOTSTRAP_ADMIN_USER_ID: adminId,
-        REGISTRATION_EMAIL_CONFIRMATION_ENABLED: 'false',
-        HEALTH_CHECK_ENABLED: 'true',
-        // High enough that the IP limits never get in the way here.
-        THROTTLE_GLOBAL_LIMIT: '1000',
-        THROTTLE_REGISTRATION_LIMIT: '1000',
-      },
-      { authenticateFromHeader: true },
-    ));
+    ({ app } = await createTestApp({
+      POSTGRES_DB: DB_NAME,
+      RBAC_BOOTSTRAP_ADMIN_USER_ID: adminId,
+      REGISTRATION_EMAIL_CONFIRMATION_ENABLED: 'false',
+      HEALTH_CHECK_ENABLED: 'true',
+      // High enough that the IP limits never get in the way here.
+      THROTTLE_GLOBAL_LIMIT: '1000',
+      THROTTLE_REGISTRATION_LIMIT: '1000',
+    }));
   });
 
   afterAll(async () => {
@@ -70,15 +68,21 @@ describe('RBAC (e2e)', () => {
 
   const http = () => request(app.getHttpServer());
 
-  /** A request made by `userId` (through the test auth header). */
-  const as = (userId: string) => ({
-    get: (url: string) => http().get(url).set(TEST_USER_HEADER, userId),
-    post: (url: string, body: object) =>
-      http().post(url).set(TEST_USER_HEADER, userId).send(body),
-    put: (url: string, body: object) =>
-      http().put(url).set(TEST_USER_HEADER, userId).send(body),
-    delete: (url: string) => http().delete(url).set(TEST_USER_HEADER, userId),
-  });
+  /**
+   * A request made by `userId`, with a real access cookie signed by the app's
+   * own `TokenService`, so it goes through `AccessCheckGuard` like a browser.
+   */
+  const as = (userId: string) => {
+    const cookie = `access_token=${app.get(TokenService).signAccess(userId)}`;
+    return {
+      get: (url: string) => http().get(url).set('Cookie', cookie),
+      post: (url: string, body: object) =>
+        http().post(url).set('Cookie', cookie).send(body),
+      put: (url: string, body: object) =>
+        http().put(url).set('Cookie', cookie).send(body),
+      delete: (url: string) => http().delete(url).set('Cookie', cookie),
+    };
+  };
 
   const authorize = (userId: string, permission: string, action: string) =>
     app.get(RbacAuthorizationService).authorize(userId, permission, action);
@@ -171,10 +175,13 @@ describe('RBAC (e2e)', () => {
       expect(names).toEqual(expect.arrayContaining(['admin', 'user']));
     });
 
-    it('denies an unknown user (no roles) by default', async () => {
-      await as('00000000-0000-4000-8000-000000000000')
+    it('never lets a user who does not exist reach RBAC', async () => {
+      // A validly signed token for a missing user: the access check refuses
+      // it with 401 before RBAC runs.
+      const res = await as('00000000-0000-4000-8000-000000000000')
         .get('/admin/rbac/roles')
-        .expect(403);
+        .expect(401);
+      expect(res.body).toMatchObject({ code: 'invalid_session' });
     });
 
     it('applies an admin change to the next request (snapshot reload)', async () => {
@@ -354,8 +361,9 @@ describe('RBAC (e2e)', () => {
 
         const res = await as(adminId).get('/admin/rbac/roles').expect(503);
         expect(res.body).toMatchObject({ code: 'authorization_unavailable' });
-        // Never turned into a 403 or a 200, even for a user without roles.
-        await as(pendingId).get('/admin/rbac/roles').expect(503);
+        // Never turned into a 403 or a 200, even for a user without the
+        // admin permissions.
+        await as(aliceId).get('/admin/rbac/roles').expect(503);
         await http().get('/health').expect(503);
       } finally {
         await db.query(

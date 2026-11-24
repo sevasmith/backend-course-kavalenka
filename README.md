@@ -21,6 +21,7 @@ src/
 │   ├── config/      # App configuration (env variables)
 │   ├── database/    # TypeORM + PostgreSQL connection
 │   ├── health/      # Health check endpoints
+│   ├── logging/     # Request id in every log line (nestjs-cls)
 │   └── app/         # Root module
 ├── database/        # TypeORM CLI data-source and migrations
 ├── modules/         # Feature modules

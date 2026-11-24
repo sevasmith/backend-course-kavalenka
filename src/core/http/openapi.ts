@@ -1,18 +1,26 @@
-import { INestApplication } from '@nestjs/common';
+import { applyDecorators, INestApplication } from '@nestjs/common';
 import {
+  ApiHeader,
   ApiResponse,
   DocumentBuilder,
   OpenAPIObject,
   SwaggerModule,
 } from '@nestjs/swagger';
 
-import { ApiErrorResponseDto } from './api-error-response.dto';
+import {
+  ApiErrorResponseDto,
+  RateLimitErrorDto,
+} from './api-error-response.dto';
+import { CSRF_HEADER } from './csrf.guard';
 
 /** Where the Swagger UI is served; the JSON document is at `/docs-json`. */
 export const OPENAPI_PATH = 'docs';
 
 /** The cookie that carries the access token (`task.md`, Authentication). */
 export const ACCESS_TOKEN_COOKIE = 'access_token';
+
+/** The cookie that carries the refresh token (`task.md`, Authentication). */
+export const REFRESH_TOKEN_COOKIE = 'refresh_token';
 
 /**
  * Builds the OpenAPI document from the controllers and DTO decorators and
@@ -43,6 +51,13 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       { type: 'apiKey', in: 'cookie' },
       ACCESS_TOKEN_COOKIE,
     )
+    // Only `POST /auth/refresh` uses it: the browser sends this cookie to
+    // that path alone.
+    .addCookieAuth(
+      REFRESH_TOKEN_COOKIE,
+      { type: 'apiKey', in: 'cookie' },
+      REFRESH_TOKEN_COOKIE,
+    )
     .build();
 
   return SwaggerModule.createDocument(app, config);
@@ -68,3 +83,39 @@ export const ApiErrorResponse = (status: number, description?: string) =>
     type: ApiErrorResponseDto,
     description: description ?? DEFAULT_ERROR_DESCRIPTIONS[status],
   });
+
+/**
+ * 429 with `retryAfterSeconds` when the wait is known. The global limit
+ * (`THROTTLE_GLOBAL_*`, per IP) applies to every route, so every route can
+ * return it; `description` adds the route's own limits.
+ */
+export const ApiRateLimitResponse = (description?: string) =>
+  ApiResponse({
+    status: 429,
+    type: RateLimitErrorDto,
+    description:
+      '`rate_limit_exceeded`: ' +
+      (description ?? 'too many requests from this IP.'),
+  });
+
+/** Text of the 403 a state-changing route can return from `CsrfGuard`. */
+export const CSRF_REJECTED_DESCRIPTION =
+  '`csrf_rejected`: a request from another origin that is not trusted or ' +
+  `has no \`${CSRF_HEADER}: 1\`.`;
+
+/**
+ * The header `CsrfGuard` checks on POST, PUT, PATCH and DELETE. Only the
+ * header: a route documents its 403 itself, because OpenAPI keeps one entry
+ * per status and some routes have another 403 too (`permission_denied`).
+ */
+export const ApiCsrfHeader = () =>
+  applyDecorators(
+    ApiHeader({
+      name: CSRF_HEADER,
+      required: false,
+      schema: { type: 'string', enum: ['1'] },
+      description:
+        'Required, with the value `1`, on a request from another origin ' +
+        '(a trusted frontend). Not needed from the same origin.',
+    }),
+  );

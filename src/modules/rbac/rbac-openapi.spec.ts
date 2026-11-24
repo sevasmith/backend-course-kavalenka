@@ -79,7 +79,25 @@ describe('RBAC OpenAPI document', () => {
     );
   });
 
-  it('gives every endpoint cookie auth and the 401/403/503 errors', () => {
+  it('gives every write endpoint the CSRF header and both 403 codes', () => {
+    for (const { method, operation } of operations()) {
+      const hasHeader = (operation.parameters ?? []).some(
+        (p) => 'name' in p && p.name === 'X-CSRF-Protection',
+      );
+      const forbidden = (operation.responses['403'] as { description: string })
+        .description;
+
+      expect(hasHeader).toBe(method !== 'get');
+      expect(forbidden).toContain('permission_denied');
+      if (method === 'get') {
+        expect(forbidden).not.toContain('csrf_rejected');
+      } else {
+        expect(forbidden).toContain('csrf_rejected');
+      }
+    }
+  });
+
+  it('gives every endpoint cookie auth and the 401/403/429/503 errors', () => {
     // The scheme the routes reference must exist, or Swagger UI can't use it.
     expect(document.components?.securitySchemes?.access_token).toEqual({
       type: 'apiKey',
@@ -88,7 +106,7 @@ describe('RBAC OpenAPI document', () => {
     });
     for (const { operation } of operations()) {
       expect(operation.security).toEqual([{ access_token: [] }]);
-      for (const status of ['401', '403', '503']) {
+      for (const status of ['401', '403', '429', '503']) {
         expect(operation.responses[status]).toBeDefined();
       }
     }

@@ -22,6 +22,13 @@ export const ErrorCode = {
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
+/**
+ * Extra fields a few errors add to the body, e.g. `retryAfterSeconds` of a
+ * 429, or the attempt fields of a login 503 after an SMTP failure. Only safe,
+ * chosen values: never a secret, token or infrastructure detail.
+ */
+export type ErrorDetails = Record<string, string | number | boolean>;
+
 /** The body of every error response. */
 export interface ErrorResponseBody {
   statusCode: number;
@@ -29,6 +36,10 @@ export interface ErrorResponseBody {
   /** An array only for DTO validation errors (one entry per failed rule). */
   message: string | string[];
 }
+
+/** What the exception filter sends: the common fields plus any details. */
+export type ErrorResponseBodyWithDetails = ErrorResponseBody &
+  Record<string, unknown>;
 
 /**
  * The code used when the thrown exception doesn't choose one. A status with
@@ -59,12 +70,16 @@ export function defaultErrorCode(status: number): ErrorCode {
  * The response object for a Nest exception that needs a non-default code:
  * `new ServiceUnavailableException(apiError(ErrorCode.AUTHORIZATION_UNAVAILABLE, '...'))`.
  * The exception keeps its class, so `instanceof` checks still work.
+ *
+ * `details` are copied into the response body next to `code` and `message`
+ * (also for a 5xx, whose message is replaced with a neutral one).
  */
 export function apiError(
   code: ErrorCode,
   message: string,
-): { code: ErrorCode; message: string } {
-  return { code, message };
+  details?: ErrorDetails,
+): { code: ErrorCode; message: string; details?: ErrorDetails } {
+  return details ? { code, message, details } : { code, message };
 }
 
 export function isErrorCode(value: unknown): value is ErrorCode {

@@ -1,3 +1,4 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsNotEmpty,
   IsString,
@@ -40,15 +41,30 @@ function IsNotSentWithOtpFields(options?: ValidationOptions) {
  * With a token, the OTP fields must be absent.
  */
 export class ConfirmRegistrationDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'OTP form only, together with `code`.',
+  })
   @ValidateIf((dto: ConfirmRegistrationDto) => dto.token === undefined)
   @IsUUID(undefined, { message: 'attemptId must be a UUID' })
   attemptId?: string;
 
+  @ApiPropertyOptional({
+    pattern: '^\\d{6}$',
+    example: '123456',
+    description: 'OTP form only: the 6-digit code from the email.',
+  })
   @ValidateIf((dto: ConfirmRegistrationDto) => dto.token === undefined)
   @IsString()
   @Matches(/^\d{6}$/, { message: 'code must be exactly 6 digits' })
   code?: string;
 
+  @ApiPropertyOptional({
+    maxLength: 128,
+    description:
+      'Magic link form only: the token from the link fragment (after `#`). ' +
+      'Never sent together with `attemptId` or `code`.',
+  })
   @ValidateIf(
     (dto: ConfirmRegistrationDto) =>
       dto.token !== undefined ||

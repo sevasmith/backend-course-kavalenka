@@ -1,4 +1,8 @@
-export type RegistrationConfirmationMethod = 'otp' | 'magic_link';
+/** How an email step delivers its secret: a 6-digit code or a link. */
+export type EmailConfirmationMethod = 'otp' | 'magic_link';
+
+/** The `SameSite` value of the auth cookies (1.2, "Cookies, CORS, and CSRF"). */
+export type AuthCookieSameSite = 'strict' | 'none';
 
 export interface Config {
   PORT: number;
@@ -21,14 +25,51 @@ export interface Config {
   THROTTLE_GLOBAL_LIMIT?: number;
   THROTTLE_REGISTRATION_TTL?: number;
   THROTTLE_REGISTRATION_LIMIT?: number;
+  THROTTLE_LOGIN_TTL?: number;
+  THROTTLE_LOGIN_LIMIT?: number;
 
   /**
    * Registration options
    */
   REGISTRATION_EMAIL_CONFIRMATION_ENABLED?: boolean;
-  REGISTRATION_EMAIL_CONFIRMATION_METHOD: RegistrationConfirmationMethod;
+  REGISTRATION_EMAIL_CONFIRMATION_METHOD: EmailConfirmationMethod;
   REGISTRATION_CHALLENGE_HMAC_KEY: string;
   REGISTRATION_CONFIRM_URL?: string;
+
+  /**
+   * Authentication options (1.2)
+   */
+  /** Signs access tokens (HS256). At least 32 bytes. */
+  JWT_ACCESS_SECRET: string;
+  /** Signs refresh tokens (HS256). At least 32 bytes. */
+  JWT_REFRESH_SECRET: string;
+  /** The `iss` claim, set on issue and checked on verify. */
+  JWT_ISSUER: string;
+  /** The `aud` claim, set on issue and checked on verify. */
+  JWT_AUDIENCE: string;
+  /** Turns on the email step after a correct password at login. */
+  LOGIN_EMAIL_CONFIRMATION_ENABLED: boolean;
+  /** The single method the server uses for new login attempts. */
+  LOGIN_EMAIL_CONFIRMATION_METHOD: EmailConfirmationMethod;
+  /** HMAC-SHA256 key for login codes and link secrets. At least 32 bytes. */
+  LOGIN_CHALLENGE_HMAC_KEY: string;
+  /**
+   * HMAC-SHA256 key for the log identifier of an unknown email, so attacks
+   * can be correlated without logging the address. At least 32 bytes.
+   */
+  AUDIT_LOG_HMAC_KEY: string;
+  /** Page the login magic link opens; the token goes after `#`. */
+  LOGIN_CONFIRM_URL?: string;
+  /**
+   * Exact origins of trusted frontends on another origin (CORS and CSRF).
+   * Empty when the frontend and the API share one origin.
+   */
+  TRUSTED_ORIGINS: string[];
+  /**
+   * `SameSite` of both auth cookies. `strict` (default) for the same origin
+   * or a same-site frontend; `none` only for a frontend on another site.
+   */
+  AUTH_COOKIE_SAME_SITE: AuthCookieSameSite;
 
   /**
    * RBAC options

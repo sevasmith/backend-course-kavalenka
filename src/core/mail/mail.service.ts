@@ -31,6 +31,22 @@ export class MailService {
     );
   }
 
+  async sendLoginOtp(to: string, code: string): Promise<void> {
+    await this.send(
+      to,
+      'Confirm your login',
+      `Your login code: ${code}\n\nIt expires in 10 minutes. If you did not try to log in, change your password.`,
+    );
+  }
+
+  async sendLoginMagicLink(to: string, url: string): Promise<void> {
+    await this.send(
+      to,
+      'Confirm your login',
+      `Open this link to confirm your login:\n${url}\n\nIt expires in 10 minutes. If you did not try to log in, change your password.`,
+    );
+  }
+
   private async send(to: string, subject: string, text: string): Promise<void> {
     await this.transporter.sendMail({
       from: this.configService.get('SMTP_FROM'),
