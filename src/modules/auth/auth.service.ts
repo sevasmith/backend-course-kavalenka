@@ -529,14 +529,14 @@ export class AuthService {
 
     if (outcome.confirmed) {
       this.logger.log(
-        `Login confirmed, attemptId=${outcome.attemptId}, userId=${outcome.userId}`,
+        `Login confirmed, method=${outcome.method}, attemptId=${outcome.attemptId}, userId=${outcome.userId}`,
       );
       return outcome.tokens;
     }
 
-    const { reason, attemptId, userId, attempts } = outcome;
+    const { reason, attemptId, userId, method, attempts } = outcome;
     this.logger.warn(
-      `Login confirmation rejected, reason=${reason}, ` +
+      `Login confirmation rejected, reason=${reason}, method=${method ?? 'unknown'}, ` +
         `attemptId=${attemptId ?? 'unknown'}, userId=${userId ?? 'unknown'}` +
         (attempts !== undefined
           ? `, attempts=${attempts}/${LOGIN_CHALLENGE_MAX_ATTEMPTS}`
@@ -605,10 +605,18 @@ export class AuthService {
     }
 
     const attemptId = challenge.id;
+    // The saved method, for the log (1.2 §1.5): never the one the client sent.
+    const method = challenge.method;
 
     // A code sent for a magic link attempt (or a token for an OTP one).
     if (challenge.method !== target.method) {
-      return { confirmed: false, reason: 'wrong_method', attemptId, userId };
+      return {
+        confirmed: false,
+        reason: 'wrong_method',
+        attemptId,
+        userId,
+        method,
+      };
     }
 
     if (challenge.consumedAt !== null) {
@@ -617,12 +625,12 @@ export class AuthService {
         LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED
           ? 'attempts_exhausted'
           : 'consumed';
-      return { confirmed: false, reason, attemptId, userId };
+      return { confirmed: false, reason, attemptId, userId, method };
     }
 
     // `last_sent_at + 10 min`. Rejected without counting an entry.
     if (this.loginChallengeService.isExpired(challenge)) {
-      return { confirmed: false, reason: 'expired', attemptId, userId };
+      return { confirmed: false, reason: 'expired', attemptId, userId, method };
     }
 
     // Blocked or deleted after the password check: the attempt can never
@@ -632,7 +640,13 @@ export class AuthService {
         challenge,
         LoginChallengeConsumedReason.USER_INACTIVE,
       );
-      return { confirmed: false, reason: 'user_inactive', attemptId, userId };
+      return {
+        confirmed: false,
+        reason: 'user_inactive',
+        attemptId,
+        userId,
+        method,
+      };
     }
 
     if (!this.loginChallengeService.secretMatches(challenge, target.secret)) {
@@ -646,10 +660,17 @@ export class AuthService {
           reason: 'wrong_secret',
           attemptId,
           userId,
+          method,
           attempts,
         };
       }
-      return { confirmed: false, reason: 'wrong_secret', attemptId, userId };
+      return {
+        confirmed: false,
+        reason: 'wrong_secret',
+        attemptId,
+        userId,
+        method,
+      };
     }
 
     const tokens = this.signTokens(userId);
@@ -657,7 +678,7 @@ export class AuthService {
       challenge,
       LoginChallengeConsumedReason.CONFIRMED,
     );
-    return { confirmed: true, attemptId, userId, tokens };
+    return { confirmed: true, attemptId, userId, method, tokens };
   }
 
   /**
@@ -751,6 +772,8 @@ export class AuthService {
     if (!challenge) {
       return { resent: false, reason: 'not_found', attemptId };
     }
+    // The saved method, for the log (1.2 §1.5).
+    const method = challenge.method;
 
     if (challenge.consumedAt !== null) {
       const reason =
@@ -758,7 +781,7 @@ export class AuthService {
         LoginChallengeConsumedReason.ATTEMPTS_EXHAUSTED
           ? 'attempts_exhausted'
           : 'consumed';
-      return { resent: false, reason, attemptId, userId };
+      return { resent: false, reason, attemptId, userId, method };
     }
 
     if (user?.status !== UserStatus.ACTIVE) {
@@ -766,7 +789,13 @@ export class AuthService {
         challenge,
         LoginChallengeConsumedReason.USER_INACTIVE,
       );
-      return { resent: false, reason: 'user_inactive', attemptId, userId };
+      return {
+        resent: false,
+        reason: 'user_inactive',
+        attemptId,
+        userId,
+        method,
+      };
     }
 
     const retryAfterSeconds =
@@ -777,6 +806,7 @@ export class AuthService {
         reason: 'too_soon',
         attemptId,
         userId,
+        method,
         retryAfterSeconds,
       };
     }
@@ -790,9 +820,10 @@ export class AuthService {
   private rejectLoginResend(
     outcome: Extract<LoginResendOutcome, { resent: false }>,
   ): never {
-    const { reason, attemptId, userId, retryAfterSeconds } = outcome;
+    const { reason, attemptId, userId, method, retryAfterSeconds } = outcome;
     this.logger.warn(
-      `Login resend rejected, reason=${reason}, attemptId=${attemptId}, ` +
+      `Login resend rejected, reason=${reason}, method=${method ?? 'unknown'}, ` +
+        `attemptId=${attemptId}, ` +
         `userId=${userId ?? 'unknown'}` +
         (retryAfterSeconds !== undefined
           ? `, retryAfterSeconds=${retryAfterSeconds}`

@@ -108,12 +108,21 @@ export type LoginConfirmationFailureReason =
  * the `user_inactive` consumption.
  */
 export type LoginConfirmationOutcome =
-  | { confirmed: true; attemptId: string; userId: string; tokens: AuthTokens }
+  | {
+      confirmed: true;
+      attemptId: string;
+      userId: string;
+      /** For the log only (1.2 §1.5). */
+      method: LoginChallengeMethod;
+      tokens: AuthTokens;
+    }
   | {
       confirmed: false;
       reason: LoginConfirmationFailureReason;
       attemptId?: string;
       userId?: string;
+      /** The saved method; missing when the attempt was not found. */
+      method?: LoginChallengeMethod;
       attempts?: number;
     };
 
@@ -159,5 +168,7 @@ export type LoginResendOutcome =
       reason: LoginResendFailureReason;
       attemptId: string;
       userId?: string;
+      /** The saved method; missing when the attempt was not found. */
+      method?: LoginChallengeMethod;
       retryAfterSeconds?: number;
     };

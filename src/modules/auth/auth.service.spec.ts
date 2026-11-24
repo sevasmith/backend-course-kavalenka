@@ -1489,11 +1489,47 @@ describe('AuthService', () => {
         await service.confirmLogin(otpDto);
         expectLogsWithout('654321', 'access.jwt', 'refresh.jwt');
       });
+
+      it('logs the saved method with the attempt and the user', async () => {
+        await service.confirmLogin(otpDto);
+
+        expect(logs).toContain(
+          `Login confirmed, method=otp, attemptId=${attemptId}, userId=user-id`,
+        );
+      });
     });
 
     describe('wrong code or link', () => {
       beforeEach(() => {
         loginChallengeService.secretMatches.mockReturnValue(false);
+      });
+
+      it('logs the method of the saved attempt', async () => {
+        attempt.method = LoginChallengeMethod.MAGIC_LINK;
+        loginChallengeService.parseMagicLinkToken.mockReturnValue({
+          attemptId,
+          secret: 'wrong-secret',
+        });
+
+        await expect400(tokenDto);
+
+        expect(logs).toContain(
+          'Login confirmation rejected, reason=wrong_secret, ' +
+            `method=magic_link, attemptId=${attemptId}, userId=user-id`,
+        );
+        expectLogsWithout('wrong-secret');
+      });
+
+      it('logs the method as unknown when the attempt is not found', async () => {
+        loginChallengeService.findById.mockResolvedValue(null);
+
+        await expect400();
+
+        expect(logs).toContainEqual(
+          expect.stringContaining(
+            'Login confirmation rejected, reason=not_found, method=unknown',
+          ),
+        );
       });
 
       it('counts a wrong OTP and answers 400', async () => {
@@ -1801,6 +1837,10 @@ describe('AuthService', () => {
 
         expect(error.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
         expect(loginChallengeService.rotateSecret).not.toHaveBeenCalled();
+        expect(logs).toContain(
+          'Login resend rejected, reason=attempts_exhausted, method=otp, ' +
+            `attemptId=${attemptId}, userId=user-id`,
+        );
       });
 
       it('answers 429 with the remaining seconds within 60 seconds', async () => {
