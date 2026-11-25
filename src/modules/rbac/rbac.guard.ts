@@ -75,12 +75,17 @@ export class RbacGuard implements CanActivate {
       case 'invalid': {
         // The startup scan should make this unreachable. If a route slips
         // through anyway, it is blocked, never opened (`task.md`: 503).
+        // The details go only to the log; the client gets the same neutral
+        // 503 as for any other unavailable authorization.
         const route = `${context.getClass().name}.${context.getHandler().name}`;
-        this.logger.error(`Route ${route} has ${access.kind} access, denied`);
+        const detail = access.kind === 'invalid' ? ` (${access.problem})` : '';
+        this.logger.error(
+          `Route ${route} has ${access.kind} access${detail}, denied`,
+        );
         throw new ServiceUnavailableException(
           apiError(
             ErrorCode.AUTHORIZATION_UNAVAILABLE,
-            'Route access is not declared',
+            'Authorization is temporarily unavailable',
           ),
         );
       }

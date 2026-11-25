@@ -64,9 +64,9 @@ export class AccessCheckGuard implements CanActivate {
       this.reject('missing');
     }
     // Only routes with a permission need a user. `@Public()` routes stay
-    // open, a presented receipt is checked by the handler, and undeclared
-    // or ambiguous routes are left to `RbacGuard`, which answers 503 for
-    // them (a 401 here would hide the misconfiguration).
+    // open, a presented receipt is checked by the handler, and undeclared,
+    // ambiguous or invalid routes are left to `RbacGuard`, which answers 503
+    // for them (a 401 here would hide the misconfiguration).
     if (access.kind !== 'permission') {
       return true;
     }

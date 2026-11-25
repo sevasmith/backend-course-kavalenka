@@ -121,7 +121,7 @@ export function getRouteAccess(
     targets,
   );
 
-  // `@Public()` with a pair or a receipt is a contradiction (1.3 §1.3.5).
+  // `@Public()` with a pair or a receipt is a contradiction (1.3 §1.3.2).
   if (isPublic && (required || receiptHeader !== undefined)) {
     return { kind: 'ambiguous' };
   }
@@ -168,7 +168,7 @@ export type RequestAccess =
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
 /**
- * Applies the receipt rule of 1.3 §1.3.5 to one request. Shared by
+ * Applies the receipt rule of 1.3 §1.3.2 to one request. Shared by
  * `AccessCheckGuard` and `RbacGuard`, so both make the same choice.
  * Only "is the header there" is decided here; whether the receipt is valid
  * is the handler's job.
