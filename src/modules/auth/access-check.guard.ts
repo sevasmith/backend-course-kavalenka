@@ -10,7 +10,10 @@ import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
-import { getRouteAccess } from '@/modules/rbac/rbac.decorators';
+import {
+  getRouteAccess,
+  resolveRequestAccess,
+} from '@/modules/rbac/rbac.decorators';
 import type { AuthenticatedRequest } from '@/modules/rbac/rbac.guard';
 import { UsersService } from '@/modules/users/users.service';
 import { UserStatus } from '@/modules/users/user.types';
@@ -47,21 +50,27 @@ export class AccessCheckGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const access = getRouteAccess(
-      this.reflector,
-      context.getHandler(),
-      context.getClass(),
+    const request = context
+      .switchToHttp()
+      .getRequest<FastifyRequest & AuthenticatedRequest>();
+    const access = resolveRequestAccess(
+      getRouteAccess(this.reflector, context.getHandler(), context.getClass()),
+      request.headers,
     );
+
+    // A receipt-only route called without its header: there is no receipt
+    // and no session to fall back on.
+    if (access.kind === 'receiptMissing') {
+      this.reject('missing');
+    }
     // Only routes with a permission need a user. `@Public()` routes stay
-    // open, and undeclared or ambiguous ones are left to `RbacGuard`, which
-    // answers 503 for them (a 401 here would hide the misconfiguration).
+    // open, a presented receipt is checked by the handler, and undeclared
+    // or ambiguous routes are left to `RbacGuard`, which answers 503 for
+    // them (a 401 here would hide the misconfiguration).
     if (access.kind !== 'permission') {
       return true;
     }
 
-    const request = context
-      .switchToHttp()
-      .getRequest<FastifyRequest & AuthenticatedRequest>();
     // Never trust a `user` set by anything before this guard.
     request.user = undefined;
 

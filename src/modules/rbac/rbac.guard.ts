@@ -10,7 +10,7 @@ import {
 import { Reflector } from '@nestjs/core';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
-import { getRouteAccess } from './rbac.decorators';
+import { getRouteAccess, resolveRequestAccess } from './rbac.decorators';
 import { RbacAccessCheckEvent, RbacAuditLogger } from './rbac-audit.logger';
 import { RbacAuthorizationService } from './rbac-authorization.service';
 import { RbacPolicyUnavailableError } from './rbac-policy-snapshot.service';
@@ -24,6 +24,8 @@ export interface AuthenticatedRequest {
   user?: { id: string };
   /** Fastify's per-request id, used to find a request in the logs. */
   id?: string;
+  /** Read only to see if a declared receipt header is present. */
+  headers?: Record<string, string | string[] | undefined>;
 }
 
 /**
@@ -49,21 +51,27 @@ export class RbacGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const access = getRouteAccess(
-      this.reflector,
-      context.getHandler(),
-      context.getClass(),
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const access = resolveRequestAccess(
+      getRouteAccess(this.reflector, context.getHandler(), context.getClass()),
+      request.headers,
     );
 
     switch (access.kind) {
       case 'public':
         return true;
 
-      // Receipt routes are not handled until task 4: blocked, never opened.
+      // The handler checks the receipt; RBAC has nothing to decide here.
+      case 'receiptPresented':
+        return true;
+
+      // `AccessCheckGuard` already answered 401. This is a second line of
+      // defence if the guard order ever changes.
+      case 'receiptMissing':
+        throw new UnauthorizedException();
+
       case 'undeclared':
-      case 'ambiguous':
-      case 'receipt':
-      case 'receiptOrPermission': {
+      case 'ambiguous': {
         // The startup scan should make this unreachable. If a route slips
         // through anyway, it is blocked, never opened (`task.md`: 503).
         const route = `${context.getClass().name}.${context.getHandler().name}`;
@@ -79,9 +87,6 @@ export class RbacGuard implements CanActivate {
       case 'permission': {
         // `userId` comes only from the auth context, never from the request
         // body, params or headers the client controls.
-        const request = context
-          .switchToHttp()
-          .getRequest<AuthenticatedRequest>();
         const userId = request.user?.id;
         // `AccessCheckGuard` already refused a request without a user. This
         // is a second line of defence if the guard order ever changes.
