@@ -10,6 +10,7 @@ import type { AuthenticatedRequest } from './rbac.guard';
 
 export const IS_PUBLIC_KEY = 'rbac:isPublic';
 export const REQUIRED_PERMISSION_KEY = 'rbac:requiredPermission';
+export const RECEIPT_HEADER_KEY = 'rbac:receiptHeader';
 
 export interface RequiredPermission {
   permission: string;
@@ -25,6 +26,15 @@ export const RequirePermission = (permission: string, action: string) =>
     permission,
     action,
   });
+
+/**
+ * The route can be opened by a secret receipt in this header instead of a
+ * session, e.g. `@ReceiptHeader('Deletion-Receipt')`. With the header, the
+ * handler checks the receipt; without it, the route's `@RequirePermission()`
+ * pair applies, if it has one.
+ */
+export const ReceiptHeader = (header: string) =>
+  SetMetadata<string, string>(RECEIPT_HEADER_KEY, header);
 
 /**
  * The id of the user making the request, from the auth context only (never
@@ -50,6 +60,8 @@ export const ActorUserId = createParamDecorator(
 export type RouteAccess =
   | { kind: 'public' }
   | ({ kind: 'permission' } & RequiredPermission)
+  | { kind: 'receipt'; header: string }
+  | ({ kind: 'receiptOrPermission'; header: string } & RequiredPermission)
   | { kind: 'undeclared' }
   | { kind: 'ambiguous' };
 
@@ -73,11 +85,23 @@ export function getRouteAccess(
     targets,
   );
 
-  if (isPublic && required) {
+  const receiptHeader = reflector.getAllAndOverride<string | undefined>(
+    RECEIPT_HEADER_KEY,
+    targets,
+  );
+
+  // `@Public()` with a pair or a receipt is a contradiction (1.3 §1.3.5).
+  if (isPublic && (required || receiptHeader)) {
     return { kind: 'ambiguous' };
   }
   if (isPublic) {
     return { kind: 'public' };
+  }
+  if (receiptHeader && required) {
+    return { kind: 'receiptOrPermission', header: receiptHeader, ...required };
+  }
+  if (receiptHeader) {
+    return { kind: 'receipt', header: receiptHeader };
   }
   if (required) {
     return { kind: 'permission', ...required };

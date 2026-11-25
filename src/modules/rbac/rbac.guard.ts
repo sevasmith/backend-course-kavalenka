@@ -59,8 +59,11 @@ export class RbacGuard implements CanActivate {
       case 'public':
         return true;
 
+      // Receipt routes are not handled until task 4: blocked, never opened.
       case 'undeclared':
-      case 'ambiguous': {
+      case 'ambiguous':
+      case 'receipt':
+      case 'receiptOrPermission': {
         // The startup scan should make this unreachable. If a route slips
         // through anyway, it is blocked, never opened (`task.md`: 503).
         const route = `${context.getClass().name}.${context.getHandler().name}`;
