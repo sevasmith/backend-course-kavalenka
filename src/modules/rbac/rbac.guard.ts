@@ -71,7 +71,8 @@ export class RbacGuard implements CanActivate {
         throw new UnauthorizedException();
 
       case 'undeclared':
-      case 'ambiguous': {
+      case 'ambiguous':
+      case 'invalid': {
         // The startup scan should make this unreachable. If a route slips
         // through anyway, it is blocked, never opened (`task.md`: 503).
         const route = `${context.getClass().name}.${context.getHandler().name}`;

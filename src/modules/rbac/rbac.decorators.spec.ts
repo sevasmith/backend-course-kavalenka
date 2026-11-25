@@ -19,6 +19,19 @@ class Routes {
   @Public()
   @ReceiptHeader('Deletion-Receipt')
   publicAndReceipt() {}
+
+  @RequirePermission('Users', 'read')
+  badPermission() {}
+
+  @RequirePermission('users', 'read all')
+  badAction() {}
+
+  @ReceiptHeader('Deletion Receipt')
+  @RequirePermission('users', 'delete')
+  badHeader() {}
+
+  @ReceiptHeader('')
+  emptyHeader() {}
 }
 
 const accessOf = (method: keyof Routes) =>
@@ -43,6 +56,15 @@ describe('getRouteAccess', () => {
 
   it('treats @Public() with a receipt as ambiguous', () => {
     expect(accessOf('publicAndReceipt')).toEqual({ kind: 'ambiguous' });
+  });
+
+  it.each([
+    ['badPermission', 'bad permission name "Users"'],
+    ['badAction', 'bad action name "read all"'],
+    ['badHeader', 'bad receipt header name "Deletion Receipt"'],
+    ['emptyHeader', 'bad receipt header name ""'],
+  ] as const)('marks %s as invalid', (method, problem) => {
+    expect(accessOf(method)).toEqual({ kind: 'invalid', problem });
   });
 });
 

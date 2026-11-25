@@ -24,6 +24,9 @@ class TestController {
   @Public()
   @RequirePermission('users', 'read')
   ambiguous() {}
+
+  @RequirePermission('Users', 'read')
+  invalid() {}
 }
 
 @Public()
@@ -154,7 +157,7 @@ describe('RbacGuard', () => {
     expect(accessUnavailable).not.toHaveBeenCalled();
   });
 
-  it.each(['undeclared', 'ambiguous'])(
+  it.each(['undeclared', 'ambiguous', 'invalid'])(
     'blocks a route with %s access with 503',
     async (method) => {
       await expect(

@@ -2,7 +2,7 @@ import { Controller, Get, Post } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 
-import { Public, RequirePermission } from './rbac.decorators';
+import { Public, ReceiptHeader, RequirePermission } from './rbac.decorators';
 import { RbacRouteScanner } from './rbac-route-scanner';
 
 @Controller('good')
@@ -14,6 +14,15 @@ class GoodController {
   @Post()
   @RequirePermission('users', 'update')
   protected() {}
+
+  @Get('receipt')
+  @ReceiptHeader('Deletion-Receipt')
+  byReceipt() {}
+
+  @Get('receipt-or-pair')
+  @ReceiptHeader('Deletion-Receipt')
+  @RequirePermission('users', 'delete')
+  byReceiptOrPair() {}
 
   // Not a route: no decorator needed.
   helper() {}
@@ -28,6 +37,18 @@ class BadController {
   @Public()
   @RequirePermission('users', 'update')
   both() {}
+}
+
+@Controller('typo')
+class TypoController {
+  @Get()
+  @RequirePermission('Users', 'read')
+  read() {}
+
+  @Post()
+  @Public()
+  @ReceiptHeader('Deletion-Receipt')
+  publicAndReceipt() {}
 }
 
 @Public()
@@ -60,6 +81,15 @@ describe('RbacRouteScanner', () => {
     expect(scanner.findRoutesWithoutAccess()).toEqual([
       'BadController.forgotten: undeclared',
       'BadController.both: ambiguous',
+    ]);
+  });
+
+  it('names routes with a bad name or @Public() with a receipt', async () => {
+    const scanner = await scannerFor([TypoController]);
+
+    expect(scanner.findRoutesWithoutAccess()).toEqual([
+      'TypoController.read: invalid, bad permission name "Users"',
+      'TypoController.publicAndReceipt: ambiguous',
     ]);
   });
 

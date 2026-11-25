@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
+import { RBAC_NAME_PATTERN } from './dto/rbac-fields';
 import type { AuthenticatedRequest } from './rbac.guard';
 
 export const IS_PUBLIC_KEY = 'rbac:isPublic';
@@ -53,9 +54,10 @@ export const ActorUserId = createParamDecorator(
 );
 
 /**
- * What a route declares about access. `undeclared` (no decorator) and
- * `ambiguous` (`@Public()` with a pair or a receipt) are mistakes: the
- * startup scan stops the app, and the guard denies them.
+ * What a route declares about access. `undeclared` (no decorator),
+ * `ambiguous` (`@Public()` with a pair or a receipt) and `invalid` (a name
+ * in the wrong format) are mistakes: the startup scan stops the app, and the
+ * guard denies them.
  */
 export type RouteAccess =
   | { kind: 'public' }
@@ -63,7 +65,36 @@ export type RouteAccess =
   | { kind: 'receipt'; header: string }
   | ({ kind: 'receiptOrPermission'; header: string } & RequiredPermission)
   | { kind: 'undeclared' }
-  | { kind: 'ambiguous' };
+  | { kind: 'ambiguous' }
+  | { kind: 'invalid'; problem: string };
+
+/**
+ * An HTTP header name: a "token" from RFC 9110 §5.6.2. Anything else could
+ * never arrive in a request, so the receipt branch would be dead code.
+ */
+const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * Checks the names a route declares. Exact match, no lowercasing: a
+ * declaration is code, so `Users` is a typo to fix, not a value to clean up.
+ * Without this check a typo would only deny everyone at runtime (the
+ * snapshot knows no such permission), which is easy to miss.
+ */
+function findNameProblem(
+  required: RequiredPermission | undefined,
+  receiptHeader: string | undefined,
+): string | undefined {
+  if (required && !RBAC_NAME_PATTERN.test(required.permission)) {
+    return `bad permission name "${required.permission}"`;
+  }
+  if (required && !RBAC_NAME_PATTERN.test(required.action)) {
+    return `bad action name "${required.action}"`;
+  }
+  if (receiptHeader !== undefined && !HEADER_NAME_PATTERN.test(receiptHeader)) {
+    return `bad receipt header name "${receiptHeader}"`;
+  }
+  return undefined;
+}
 
 /**
  * Reads the access decorators of a route: the method first, then its
@@ -91,8 +122,12 @@ export function getRouteAccess(
   );
 
   // `@Public()` with a pair or a receipt is a contradiction (1.3 §1.3.5).
-  if (isPublic && (required || receiptHeader)) {
+  if (isPublic && (required || receiptHeader !== undefined)) {
     return { kind: 'ambiguous' };
+  }
+  const problem = findNameProblem(required, receiptHeader);
+  if (problem) {
+    return { kind: 'invalid', problem };
   }
   if (isPublic) {
     return { kind: 'public' };
@@ -126,7 +161,8 @@ export type RequestAccess =
   | { kind: 'receiptPresented'; header: string }
   | { kind: 'receiptMissing'; header: string }
   | { kind: 'undeclared' }
-  | { kind: 'ambiguous' };
+  | { kind: 'ambiguous' }
+  | { kind: 'invalid'; problem: string };
 
 /** Request headers as Fastify gives them: names are always lowercase. */
 type RequestHeaders = Record<string, string | string[] | undefined>;
