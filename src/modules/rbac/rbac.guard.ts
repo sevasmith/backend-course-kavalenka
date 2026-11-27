@@ -10,6 +10,7 @@ import {
 import { Reflector } from '@nestjs/core';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
+import { formatRefusal, UnavailableCategory } from '@/core/logging/refusal-log';
 import { getRouteAccess, resolveRequestAccess } from './rbac.decorators';
 import { RbacAccessCheckEvent, RbacAuditLogger } from './rbac-audit.logger';
 import { RbacAuthorizationService } from './rbac-authorization.service';
@@ -77,10 +78,23 @@ export class RbacGuard implements CanActivate {
         // through anyway, it is blocked, never opened (`task.md`: 503).
         // The details go only to the log; the client gets the same neutral
         // 503 as for any other unavailable authorization.
-        const route = `${context.getClass().name}.${context.getHandler().name}`;
-        const detail = access.kind === 'invalid' ? ` (${access.problem})` : '';
         this.logger.error(
-          `Route ${route} has ${access.kind} access${detail}, denied`,
+          formatRefusal(
+            {
+              status: 503,
+              category: UnavailableCategory.ROUTE_CONFIGURATION,
+            },
+            {
+              operation: `${context.getClass().name}.${context.getHandler().name}`,
+              detail: access.kind,
+              // Set by our own decorators, never by the client. Quoted,
+              // since it has spaces.
+              problem:
+                access.kind === 'invalid'
+                  ? JSON.stringify(access.problem)
+                  : undefined,
+            },
+          ),
         );
         throw new ServiceUnavailableException(
           apiError(
@@ -118,7 +132,7 @@ export class RbacGuard implements CanActivate {
         } catch (error) {
           // Logged, then rethrown unchanged: it stays a 503, never a 403.
           if (error instanceof RbacPolicyUnavailableError) {
-            this.audit.accessUnavailable(auditEvent);
+            this.audit.accessUnavailable(auditEvent, error.category);
           }
           throw error;
         }

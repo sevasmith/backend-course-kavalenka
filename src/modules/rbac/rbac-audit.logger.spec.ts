@@ -65,15 +65,18 @@ describe('RbacAuditLogger', () => {
   });
 
   it('logs an access check that could not run', () => {
-    audit.accessUnavailable({
-      actorUserId: 'admin',
-      permission: 'rbac',
-      action: 'manage',
-      operation: 'RbacRolesController.create',
-    });
+    audit.accessUnavailable(
+      {
+        actorUserId: 'admin',
+        permission: 'rbac',
+        action: 'manage',
+        operation: 'RbacRolesController.create',
+      },
+      'rbac_version',
+    );
 
     expect(warn).toHaveBeenCalledWith(
-      'rbac.access.unavailable actorUserId=admin permission=rbac action=manage operation=RbacRolesController.create result=503',
+      'rbac.access.unavailable actorUserId=admin permission=rbac action=manage operation=RbacRolesController.create category=rbac_version result=503',
     );
   });
 
@@ -87,7 +90,7 @@ describe('RbacAuditLogger', () => {
     });
 
     expect(warn).toHaveBeenCalledWith(
-      'rbac.access.denied actorUserId=alice permission=users action=list operation=UsersController.list requestId=req-1 result=403',
+      'rbac.access.denied actorUserId=alice permission=users action=list operation=UsersController.list requestId=req-1 category=permission_denied result=403',
     );
   });
 });

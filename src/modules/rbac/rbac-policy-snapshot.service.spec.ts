@@ -130,9 +130,9 @@ describe('RbacPolicySnapshotService', () => {
     dbVersion = 2;
     roles.find.mockRejectedValue(new Error('connection lost'));
 
-    await expect(service.getCurrentSnapshot()).rejects.toBeInstanceOf(
-      RbacPolicyUnavailableError,
-    );
+    await expect(service.getCurrentSnapshot()).rejects.toMatchObject({
+      category: 'rbac_snapshot',
+    });
     expect(service.isLoaded()).toBe(false);
   });
 
@@ -164,9 +164,11 @@ describe('RbacPolicySnapshotService', () => {
     await service.onApplicationBootstrap();
     policyState.findOne.mockRejectedValue(new Error('connection lost'));
 
-    await expect(service.getCurrentSnapshot()).rejects.toBeInstanceOf(
-      RbacPolicyUnavailableError,
-    );
+    const error: unknown = await service
+      .getCurrentSnapshot()
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RbacPolicyUnavailableError);
+    expect(error).toMatchObject({ category: 'rbac_version' });
     expect(service.isLoaded()).toBe(true);
   });
 });

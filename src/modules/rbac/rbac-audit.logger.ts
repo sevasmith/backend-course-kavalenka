@@ -1,5 +1,8 @@
 import { Injectable, Logger, SetMetadata } from '@nestjs/common';
 
+import { ForbiddenCategory } from '@/core/logging/refusal-log';
+import type { RbacUnavailableCategory } from './rbac-policy-snapshot.service';
+
 /** What an admin endpoint changes; used as `entityType` in audit events. */
 export type RbacAuditEntityType =
   | 'role'
@@ -104,12 +107,16 @@ export class RbacAuditLogger {
   }
 
   /**
-   * An access check said no (403). Covers admin routes too: there the
-   * permission is `rbac@manage`.
+   * An access check said no (403 `permission_denied`). Covers admin routes
+   * too: there the permission is `rbac@manage`.
    */
   accessDenied(event: RbacAccessCheckEvent): void {
     this.logger.warn(
-      formatAuditEvent('rbac.access.denied', { ...event, result: 403 }),
+      formatAuditEvent('rbac.access.denied', {
+        ...event,
+        category: ForbiddenCategory.PERMISSION_DENIED,
+        result: 403,
+      }),
     );
   }
 
@@ -118,9 +125,16 @@ export class RbacAuditLogger {
    * The cause is logged by `RbacPolicySnapshotService`; this line records
    * who was blocked from doing what.
    */
-  accessUnavailable(event: RbacAccessCheckEvent): void {
+  accessUnavailable(
+    event: RbacAccessCheckEvent,
+    category: RbacUnavailableCategory,
+  ): void {
     this.logger.warn(
-      formatAuditEvent('rbac.access.unavailable', { ...event, result: 503 }),
+      formatAuditEvent('rbac.access.unavailable', {
+        ...event,
+        category,
+        result: 503,
+      }),
     );
   }
 }

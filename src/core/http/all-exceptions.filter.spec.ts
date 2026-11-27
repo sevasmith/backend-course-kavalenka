@@ -147,7 +147,11 @@ describe('AllExceptionsFilter', () => {
 
   it('maps an unavailable policy to 503 authorization_unavailable with a neutral message', () => {
     expect(
-      handle(new RbacPolicyUnavailableError({ cause: new Error('db down') })),
+      handle(
+        new RbacPolicyUnavailableError('rbac_snapshot', {
+          cause: new Error('db down'),
+        }),
+      ),
     ).toEqual({
       statusCode: 503,
       code: ErrorCode.AUTHORIZATION_UNAVAILABLE,

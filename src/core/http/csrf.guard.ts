@@ -8,6 +8,7 @@ import {
 import type { FastifyRequest } from 'fastify';
 
 import { ConfigService } from '@/core/config/config.service';
+import { ForbiddenCategory, formatRefusal } from '@/core/logging/refusal-log';
 import { apiError, ErrorCode } from './api-error';
 
 /** The custom header a trusted cross-origin frontend sends (`task.md`). */
@@ -64,18 +65,24 @@ export class CsrfGuard implements CanActivate {
     }
 
     if (!this.trustedOrigins.has(origin)) {
-      this.reject('untrusted_origin', request);
+      this.reject('untrusted_origin');
     }
     if (request.headers[CSRF_HEADER.toLowerCase()] !== CSRF_HEADER_VALUE) {
-      this.reject('missing_csrf_header', request);
+      this.reject('missing_csrf_header');
     }
     return true;
   }
 
-  /** Logs only the reason and the request id: no origin, URL or headers. */
-  private reject(reason: string, request: FastifyRequest): never {
+  /**
+   * Logs the category, the exact reason as `detail` and the request id
+   * (added by `formatRefusal`): no origin, URL or headers.
+   */
+  private reject(detail: 'untrusted_origin' | 'missing_csrf_header'): never {
     this.logger.warn(
-      `CSRF rejected, reason=${reason}, requestId=${request.id}`,
+      formatRefusal(
+        { status: 403, category: ForbiddenCategory.CSRF_REJECTED },
+        { detail },
+      ),
     );
     throw new ForbiddenException(
       apiError(ErrorCode.CSRF_REJECTED, 'Cross-origin request rejected'),

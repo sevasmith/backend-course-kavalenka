@@ -1,6 +1,7 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
+import { ForbiddenCategory, formatRefusal } from '@/core/logging/refusal-log';
 import { RbacAuthorizationService } from './rbac-authorization.service';
 
 /** What one ownership check needs. */
@@ -37,6 +38,8 @@ export interface OwnershipCheck {
  */
 @Injectable()
 export class RbacOwnershipService {
+  private readonly logger = new Logger(RbacOwnershipService.name);
+
   constructor(
     private readonly authorizationService: RbacAuthorizationService,
   ) {}
@@ -52,6 +55,18 @@ export class RbacOwnershipService {
       check.anyAction,
     );
     if (!allowed) {
+      // The owner id is not logged: the target id goes into the log only
+      // after admission to the resource (1.3 §1.5).
+      this.logger.warn(
+        formatRefusal(
+          { status: 403, category: ForbiddenCategory.OWNERSHIP_DENIED },
+          {
+            actorUserId: check.actorUserId,
+            permission: check.permission,
+            action: check.anyAction,
+          },
+        ),
+      );
       throw new ForbiddenException(
         apiError(
           ErrorCode.OWNERSHIP_DENIED,

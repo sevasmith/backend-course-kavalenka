@@ -1,4 +1,4 @@
-import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { ExecutionContext, ForbiddenException, Logger } from '@nestjs/common';
 
 import { ConfigService } from '@/core/config/config.service';
 import { CsrfGuard } from './csrf.guard';
@@ -20,8 +20,12 @@ describe('CsrfGuard', () => {
   const apiHost = 'api.example.com';
 
   let guard: CsrfGuard;
+  let warn: jest.SpyInstance;
+
+  afterEach(() => jest.restoreAllMocks());
 
   beforeEach(() => {
+    warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     guard = new CsrfGuard({
       get: () => [trusted],
     } as unknown as ConfigService);
@@ -87,6 +91,16 @@ describe('CsrfGuard', () => {
 
   it('rejects a trusted origin without the header', () => {
     expectRejected('POST', { origin: trusted });
+    expect(warn).toHaveBeenCalledWith(
+      'access.refused status=403 category=csrf_rejected detail=missing_csrf_header',
+    );
+  });
+
+  it('logs an untrusted origin without the origin itself', () => {
+    expectRejected('POST', { origin: 'https://evil.example' });
+    expect(warn).toHaveBeenCalledWith(
+      'access.refused status=403 category=csrf_rejected detail=untrusted_origin',
+    );
   });
 
   it.each(['0', 'true', ' 1', ''])(

@@ -1,5 +1,6 @@
 import {
   ExecutionContext,
+  Logger,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -45,8 +46,14 @@ describe('AccessCheckGuard', () => {
   let guard: AccessCheckGuard;
   let verifyAccess: jest.Mock<TokenVerification, [string | undefined]>;
   let findStatusById: jest.Mock;
+  let warn: jest.SpyInstance;
+  let logError: jest.SpyInstance;
+
+  afterEach(() => jest.restoreAllMocks());
 
   beforeEach(() => {
+    warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    logError = jest.spyOn(Logger.prototype, 'error').mockImplementation();
     verifyAccess = jest.fn<TokenVerification, [string | undefined]>();
     findStatusById = jest.fn();
     guard = new AccessCheckGuard(
@@ -115,6 +122,10 @@ describe('AccessCheckGuard', () => {
 
       await expectInvalidSession(protectedRequest());
       expect(findStatusById).not.toHaveBeenCalled();
+      // The token failure is the log category as is.
+      expect(warn).toHaveBeenCalledWith(
+        `access.refused status=401 category=${reason}`,
+      );
     },
   );
 
@@ -123,6 +134,9 @@ describe('AccessCheckGuard', () => {
     findStatusById.mockResolvedValue(null);
 
     await expectInvalidSession(protectedRequest());
+    expect(warn).toHaveBeenCalledWith(
+      `access.refused status=401 category=user_inactive detail=not_found userId=${userId}`,
+    );
   });
 
   it.each([
@@ -135,6 +149,9 @@ describe('AccessCheckGuard', () => {
     findStatusById.mockResolvedValue({ id: userId, status });
 
     await expectInvalidSession(protectedRequest());
+    expect(warn).toHaveBeenCalledWith(
+      `access.refused status=401 category=user_inactive detail=${status} userId=${userId}`,
+    );
   });
 
   it('answers 503 authorization_unavailable, not 401, when the database fails', async () => {
@@ -153,6 +170,10 @@ describe('AccessCheckGuard', () => {
     expect(JSON.stringify(body)).not.toContain(userId);
     expect(JSON.stringify(body)).not.toContain('connection refused');
     expect(request.user).toBeUndefined();
+    // The log names the dependency, never the error message.
+    expect(logError).toHaveBeenCalledWith(
+      `access.refused status=503 category=users userId=${userId} error=Error`,
+    );
   });
 
   it('ignores a user set before the guard ran', async () => {

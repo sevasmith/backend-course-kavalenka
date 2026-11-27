@@ -145,7 +145,9 @@ describe('RbacAuthorizationService', () => {
   });
 
   it('throws instead of denying when the policy is unavailable', async () => {
-    getCurrentSnapshot.mockRejectedValue(new RbacPolicyUnavailableError());
+    getCurrentSnapshot.mockRejectedValue(
+      new RbacPolicyUnavailableError('rbac_snapshot'),
+    );
 
     await expect(
       service.authorize('alice', 'users', 'read'),

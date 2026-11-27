@@ -1,6 +1,7 @@
 import {
   ExecutionContext,
   ForbiddenException,
+  Logger,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -52,6 +53,8 @@ describe('RbacGuard', () => {
   let authorize: jest.Mock;
   let accessDenied: jest.Mock;
   let accessUnavailable: jest.Mock;
+
+  afterEach(() => jest.restoreAllMocks());
 
   beforeEach(() => {
     authorize = jest.fn();
@@ -125,7 +128,7 @@ describe('RbacGuard', () => {
   });
 
   it('logs and passes on the unavailable policy error instead of a 403', async () => {
-    const error = new RbacPolicyUnavailableError();
+    const error = new RbacPolicyUnavailableError('rbac_snapshot');
     authorize.mockRejectedValue(error);
 
     await expect(
@@ -136,13 +139,16 @@ describe('RbacGuard', () => {
         }),
       ),
     ).rejects.toBe(error);
-    expect(accessUnavailable).toHaveBeenCalledWith({
-      actorUserId: 'alice',
-      permission: 'users',
-      action: 'read',
-      operation: 'TestController.protected',
-      requestId: 'req-2',
-    });
+    expect(accessUnavailable).toHaveBeenCalledWith(
+      {
+        actorUserId: 'alice',
+        permission: 'users',
+        action: 'read',
+        operation: 'TestController.protected',
+        requestId: 'req-2',
+      },
+      'rbac_snapshot',
+    );
     expect(accessDenied).not.toHaveBeenCalled();
   });
 
@@ -160,12 +166,24 @@ describe('RbacGuard', () => {
   it.each(['undeclared', 'ambiguous', 'invalid'])(
     'blocks a route with %s access with 503',
     async (method) => {
+      const logError = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation();
+
       await expect(
         guard.canActivate(
           contextFor(TestController, method, { user: { id: 'alice' } }),
         ),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
       expect(authorize).not.toHaveBeenCalled();
+      expect(logError).toHaveBeenCalledWith(
+        expect.stringMatching(
+          new RegExp(
+            `^access\\.refused status=503 category=route_configuration ` +
+              `operation=TestController\\.${method} detail=${method}`,
+          ),
+        ),
+      );
     },
   );
 });

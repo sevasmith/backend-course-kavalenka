@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
 
 import { ErrorCode } from '@/core/http/api-error';
 import { RbacAuthorizationService } from './rbac-authorization.service';
@@ -16,7 +16,12 @@ describe('RbacOwnershipService', () => {
     anyAction: 'read_any',
   };
 
+  let warn: jest.SpyInstance;
+
+  afterEach(() => jest.restoreAllMocks());
+
   beforeEach(() => {
+    warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     authorize = jest.fn();
     service = new RbacOwnershipService({
       authorize,
@@ -49,10 +54,16 @@ describe('RbacOwnershipService', () => {
     expect(body).toMatchObject({ code: ErrorCode.OWNERSHIP_DENIED });
     // The 403 must not reveal the owner or the missing action.
     expect(JSON.stringify(body)).not.toMatch(/bob|read_any/);
+    // The log has the actor and the action, but not the owner id.
+    expect(warn).toHaveBeenCalledWith(
+      'access.refused status=403 category=ownership_denied actorUserId=alice permission=users action=read_any',
+    );
   });
 
   it('keeps an unavailable snapshot as 503, never a 403', async () => {
-    authorize.mockRejectedValue(new RbacPolicyUnavailableError());
+    authorize.mockRejectedValue(
+      new RbacPolicyUnavailableError('rbac_snapshot'),
+    );
 
     await expect(service.assertOwnerOrAny(check)).rejects.toBeInstanceOf(
       RbacPolicyUnavailableError,

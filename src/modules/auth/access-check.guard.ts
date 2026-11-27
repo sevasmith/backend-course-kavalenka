@@ -11,6 +11,11 @@ import type { FastifyRequest } from 'fastify';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
 import {
+  formatRefusal,
+  UnauthorizedCategory,
+  UnavailableCategory,
+} from '@/core/logging/refusal-log';
+import {
   getRouteAccess,
   resolveRequestAccess,
 } from '@/modules/rbac/rbac.decorators';
@@ -61,7 +66,7 @@ export class AccessCheckGuard implements CanActivate {
     // A receipt-only route called without its header: there is no receipt
     // and no session to fall back on.
     if (access.kind === 'receiptMissing') {
-      this.reject('missing');
+      this.reject(UnauthorizedCategory.MISSING, { detail: 'receipt' });
     }
     // Only routes with a permission need a user. `@Public()` routes stay
     // open, a presented receipt is checked by the handler, and undeclared,
@@ -87,7 +92,10 @@ export class AccessCheckGuard implements CanActivate {
       user = await this.usersService.findStatusById(userId);
     } catch (error) {
       this.logger.error(
-        `Access check failed, reason=database, userId=${userId}: ${(error as Error).name}`,
+        formatRefusal(
+          { status: 503, category: UnavailableCategory.USERS },
+          { userId, error: (error as Error).name },
+        ),
       );
       throw new ServiceUnavailableException(
         apiError(
@@ -97,11 +105,19 @@ export class AccessCheckGuard implements CanActivate {
       );
     }
 
+    // One category for both: 1.3 counts a deleted user as not `active`.
+    // The exact status is kept as `detail` for whoever reads the log.
     if (!user) {
-      this.reject('user_missing', userId);
+      this.reject(UnauthorizedCategory.USER_INACTIVE, {
+        detail: 'not_found',
+        userId,
+      });
     }
     if (user.status !== UserStatus.ACTIVE) {
-      this.reject(`user_${user.status}`, userId);
+      this.reject(UnauthorizedCategory.USER_INACTIVE, {
+        detail: user.status,
+        userId,
+      });
     }
 
     // Only the id: no roles or other claims. RBAC reads the roles itself.
@@ -109,11 +125,12 @@ export class AccessCheckGuard implements CanActivate {
     return true;
   }
 
-  /** Logs the reason (never the token) and throws the shared 401. */
-  private reject(reason: string, userId?: string): never {
-    this.logger.warn(
-      `Access refused, reason=${reason}, userId=${userId ?? 'unknown'}`,
-    );
+  /** Logs the category (never the token) and throws the shared 401. */
+  private reject(
+    category: UnauthorizedCategory,
+    fields: { detail?: string; userId?: string } = {},
+  ): never {
+    this.logger.warn(formatRefusal({ status: 401, category }, fields));
     throw new UnauthorizedException(
       apiError(ErrorCode.INVALID_SESSION, INVALID_SESSION_MESSAGE),
     );
