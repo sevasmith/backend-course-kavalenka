@@ -169,6 +169,27 @@ describe('Auth OpenAPI document', () => {
     }
   });
 
+  it('gives no auth route the access cookie or the authorization errors', () => {
+    // These routes are @Public(): the access check and RBAC never run.
+    const chainOnly = [
+      'permission_denied',
+      'ownership_denied',
+      'authorization_unavailable',
+    ];
+    for (const path of Object.keys(document.paths)) {
+      const operation = post(path);
+      expect(operation.security ?? []).not.toContainEqual({
+        access_token: [],
+      });
+      for (const value of Object.values(operation.responses)) {
+        const { description } = value as ResponseObject;
+        for (const code of chainOnly) {
+          expect(description).not.toContain(code);
+        }
+      }
+    }
+  });
+
   it('documents the CSRF header as optional on every auth route', () => {
     for (const path of Object.keys(document.paths)) {
       const header = (post(path).parameters ?? []).find(

@@ -14,6 +14,7 @@ import { RbacGrantsController } from './rbac-grants.controller';
 import { RbacGrantsService } from './rbac-grants.service';
 import { RbacDefaultRoleService } from './rbac-default-role.service';
 import { RbacAuthorizationService } from './rbac-authorization.service';
+import { RbacOwnershipService } from './rbac-ownership.service';
 import { RbacPolicyChangeService } from './rbac-policy-change.service';
 import { RbacPolicyHealthIndicator } from './rbac-policy.health';
 import { RbacBootstrapService } from './rbac-bootstrap.service';
@@ -60,6 +61,7 @@ import { UserRole } from './user-role.entity';
     RbacPolicySnapshotService,
     RbacPolicyHealthIndicator,
     RbacAuthorizationService,
+    RbacOwnershipService,
     RbacPolicyChangeService,
     RbacAuditLogger,
     RbacAdminAuditInterceptor,
@@ -78,6 +80,8 @@ import { UserRole } from './user-role.entity';
     RbacPolicySnapshotService,
     RbacPolicyHealthIndicator,
     RbacAuthorizationService,
+    // Handlers check "own data or `*_any`" after the base RBAC pair.
+    RbacOwnershipService,
     // Registration assigns the `user` role on activation.
     RbacDefaultRoleService,
   ],

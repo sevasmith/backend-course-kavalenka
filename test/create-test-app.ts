@@ -1,5 +1,5 @@
 import fastifyCookie from '@fastify/cookie';
-import { ValidationPipe } from '@nestjs/common';
+import { Type, ValidationPipe } from '@nestjs/common';
 import {
   FastifyAdapter,
   NestFastifyApplication,
@@ -68,8 +68,14 @@ export class FakeMailService {
  * `ConfigModule.forRoot()` reads the config when its file is imported, so
  * `AppModule` is imported only after `process.env` is set. Jest gives every
  * test file its own module registry, so each file gets its own config.
+ *
+ * `extraImports` adds test-only modules (e.g. routes no real endpoint has
+ * yet). They go through the same guards and startup route scan.
  */
-export async function createTestApp(env: Record<string, string> = {}): Promise<{
+export async function createTestApp(
+  env: Record<string, string> = {},
+  extraImports: Type[] = [],
+): Promise<{
   app: NestFastifyApplication;
   mail: FakeMailService;
 }> {
@@ -83,7 +89,7 @@ export async function createTestApp(env: Record<string, string> = {}): Promise<{
 
   const mail = new FakeMailService();
   const moduleFixture = await Test.createTestingModule({
-    imports: [AppModule],
+    imports: [AppModule, ...extraImports],
   })
     .overrideProvider(MailService)
     .useValue(mail)

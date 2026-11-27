@@ -1,12 +1,13 @@
 import {
   ExecutionContext,
   ForbiddenException,
+  Logger,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
-import { Public, RequirePermission } from './rbac.decorators';
+import { Public, ReceiptHeader, RequirePermission } from './rbac.decorators';
 import { AuthenticatedRequest, RbacGuard } from './rbac.guard';
 import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacAuthorizationService } from './rbac-authorization.service';
@@ -24,6 +25,19 @@ class TestController {
   @Public()
   @RequirePermission('users', 'read')
   ambiguous() {}
+
+  @RequirePermission('Users', 'read')
+  invalid() {}
+
+  @RequirePermission('users', 'delete')
+  remove() {}
+
+  @ReceiptHeader('Deletion-Receipt')
+  byReceipt() {}
+
+  @ReceiptHeader('Deletion-Receipt')
+  @RequirePermission('users', 'delete')
+  byReceiptOrPair() {}
 }
 
 @Public()
@@ -48,36 +62,52 @@ describe('RbacGuard', () => {
   let guard: RbacGuard;
   let authorize: jest.Mock;
   let accessDenied: jest.Mock;
+  let accessGranted: jest.Mock;
   let accessUnavailable: jest.Mock;
+
+  afterEach(() => jest.restoreAllMocks());
 
   beforeEach(() => {
     authorize = jest.fn();
     accessDenied = jest.fn();
+    accessGranted = jest.fn();
     accessUnavailable = jest.fn();
     guard = new RbacGuard(
       new Reflector(),
       { authorize } as unknown as RbacAuthorizationService,
-      { accessDenied, accessUnavailable } as unknown as RbacAuditLogger,
+      {
+        accessDenied,
+        accessGranted,
+        accessUnavailable,
+      } as unknown as RbacAuditLogger,
     );
   });
 
   it('logs a denial with ids only, and nothing when allowed', async () => {
-    authorize.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    authorize
+      .mockResolvedValueOnce({ allowed: false, policyVersion: 7 })
+      .mockResolvedValueOnce({ allowed: true, policyVersion: 7 });
     const request = { user: { id: 'alice' }, id: 'req-1' };
 
     await expect(
       guard.canActivate(contextFor(TestController, 'protected', request)),
     ).rejects.toThrow(ForbiddenException);
-    expect(accessDenied).toHaveBeenCalledWith({
-      actorUserId: 'alice',
-      permission: 'users',
-      action: 'read',
-      operation: 'TestController.protected',
-      requestId: 'req-1',
-    });
+    expect(accessDenied).toHaveBeenCalledWith(
+      {
+        actorUserId: 'alice',
+        permission: 'users',
+        action: 'read',
+        operation: 'TestController.protected',
+        requestId: 'req-1',
+        policyVersion: 7,
+      },
+      'permission_denied',
+    );
 
     await guard.canActivate(contextFor(TestController, 'protected', request));
     expect(accessDenied).toHaveBeenCalledTimes(1);
+    // `users@read` is not critical: its admission is not logged.
+    expect(accessGranted).not.toHaveBeenCalled();
   });
 
   it('lets public routes through without a user or a check', async () => {
@@ -94,7 +124,7 @@ describe('RbacGuard', () => {
   });
 
   it('allows a user who holds the declared permission', async () => {
-    authorize.mockResolvedValue(true);
+    authorize.mockResolvedValue({ allowed: true, policyVersion: 1 });
 
     await expect(
       guard.canActivate(
@@ -105,7 +135,7 @@ describe('RbacGuard', () => {
   });
 
   it('returns 403 for a user without the permission', async () => {
-    authorize.mockResolvedValue(false);
+    authorize.mockResolvedValue({ allowed: false, policyVersion: 1 });
 
     await expect(
       guard.canActivate(
@@ -122,7 +152,7 @@ describe('RbacGuard', () => {
   });
 
   it('logs and passes on the unavailable policy error instead of a 403', async () => {
-    const error = new RbacPolicyUnavailableError();
+    const error = new RbacPolicyUnavailableError('rbac_snapshot');
     authorize.mockRejectedValue(error);
 
     await expect(
@@ -133,13 +163,16 @@ describe('RbacGuard', () => {
         }),
       ),
     ).rejects.toBe(error);
-    expect(accessUnavailable).toHaveBeenCalledWith({
-      actorUserId: 'alice',
-      permission: 'users',
-      action: 'read',
-      operation: 'TestController.protected',
-      requestId: 'req-2',
-    });
+    expect(accessUnavailable).toHaveBeenCalledWith(
+      {
+        actorUserId: 'alice',
+        permission: 'users',
+        action: 'read',
+        operation: 'TestController.protected',
+        requestId: 'req-2',
+      },
+      'rbac_snapshot',
+    );
     expect(accessDenied).not.toHaveBeenCalled();
   });
 
@@ -154,15 +187,90 @@ describe('RbacGuard', () => {
     expect(accessUnavailable).not.toHaveBeenCalled();
   });
 
-  it.each(['undeclared', 'ambiguous'])(
+  it('logs the admission to a critical operation with the policy version', async () => {
+    authorize.mockResolvedValue({ allowed: true, policyVersion: 4 });
+
+    await expect(
+      guard.canActivate(
+        contextFor(TestController, 'remove', {
+          user: { id: 'alice' },
+          id: 'req-3',
+        }),
+      ),
+    ).resolves.toBe(true);
+    expect(accessGranted).toHaveBeenCalledWith({
+      actorUserId: 'alice',
+      permission: 'users',
+      action: 'delete',
+      operation: 'TestController.remove',
+      requestId: 'req-3',
+      policyVersion: 4,
+    });
+  });
+
+  describe('receipt routes', () => {
+    // Fastify lowercases header names.
+    const withReceipt = { headers: { 'deletion-receipt': 'r-1' } };
+
+    it.each(['byReceipt', 'byReceiptOrPair'])(
+      '%s with the header: skips RBAC and leaves the receipt to the handler',
+      async (method) => {
+        // No user: the access check was skipped too.
+        await expect(
+          guard.canActivate(contextFor(TestController, method, withReceipt)),
+        ).resolves.toBe(true);
+        expect(authorize).not.toHaveBeenCalled();
+      },
+    );
+
+    it('receipt only, without the header: 401, never a permission check', async () => {
+      await expect(
+        guard.canActivate(
+          contextFor(TestController, 'byReceipt', {
+            user: { id: 'alice' },
+            headers: {},
+          }),
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('receipt + pair, without the header: checks the pair as usual', async () => {
+      authorize.mockResolvedValue({ allowed: false, policyVersion: 1 });
+
+      await expect(
+        guard.canActivate(
+          contextFor(TestController, 'byReceiptOrPair', {
+            user: { id: 'alice' },
+            headers: {},
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(authorize).toHaveBeenCalledWith('alice', 'users', 'delete');
+    });
+  });
+
+  it.each(['undeclared', 'ambiguous', 'invalid'])(
     'blocks a route with %s access with 503',
     async (method) => {
+      const logError = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation();
+
       await expect(
         guard.canActivate(
           contextFor(TestController, method, { user: { id: 'alice' } }),
         ),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
       expect(authorize).not.toHaveBeenCalled();
+      expect(logError).toHaveBeenCalledWith(
+        expect.stringMatching(
+          new RegExp(
+            `^access\\.refused status=503 category=route_configuration ` +
+              `operation=TestController\\.${method} detail=${method}`,
+          ),
+        ),
+      );
     },
   );
 });

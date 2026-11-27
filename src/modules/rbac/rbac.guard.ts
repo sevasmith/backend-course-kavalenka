@@ -10,9 +10,21 @@ import {
 import { Reflector } from '@nestjs/core';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
-import { getRouteAccess } from './rbac.decorators';
-import { RbacAccessCheckEvent, RbacAuditLogger } from './rbac-audit.logger';
-import { RbacAuthorizationService } from './rbac-authorization.service';
+import {
+  ForbiddenCategory,
+  formatRefusal,
+  UnavailableCategory,
+} from '@/core/logging/refusal-log';
+import { getRouteAccess, resolveRequestAccess } from './rbac.decorators';
+import {
+  isCriticalOperation,
+  RbacAccessCheckEvent,
+  RbacAuditLogger,
+} from './rbac-audit.logger';
+import {
+  RbacAuthorizationService,
+  RbacDecision,
+} from './rbac-authorization.service';
 import { RbacPolicyUnavailableError } from './rbac-policy-snapshot.service';
 
 /**
@@ -24,6 +36,8 @@ export interface AuthenticatedRequest {
   user?: { id: string };
   /** Fastify's per-request id, used to find a request in the logs. */
   id?: string;
+  /** Read only to see if a declared receipt header is present. */
+  headers?: Record<string, string | string[] | undefined>;
 }
 
 /**
@@ -49,26 +63,54 @@ export class RbacGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const access = getRouteAccess(
-      this.reflector,
-      context.getHandler(),
-      context.getClass(),
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const access = resolveRequestAccess(
+      getRouteAccess(this.reflector, context.getHandler(), context.getClass()),
+      request.headers,
     );
 
     switch (access.kind) {
       case 'public':
         return true;
 
+      // The handler checks the receipt; RBAC has nothing to decide here.
+      case 'receiptPresented':
+        return true;
+
+      // `AccessCheckGuard` already answered 401. This is a second line of
+      // defence if the guard order ever changes.
+      case 'receiptMissing':
+        throw new UnauthorizedException();
+
       case 'undeclared':
-      case 'ambiguous': {
+      case 'ambiguous':
+      case 'invalid': {
         // The startup scan should make this unreachable. If a route slips
         // through anyway, it is blocked, never opened (`task.md`: 503).
-        const route = `${context.getClass().name}.${context.getHandler().name}`;
-        this.logger.error(`Route ${route} has ${access.kind} access, denied`);
+        // The details go only to the log; the client gets the same neutral
+        // 503 as for any other unavailable authorization.
+        this.logger.error(
+          formatRefusal(
+            {
+              status: 503,
+              category: UnavailableCategory.ROUTE_CONFIGURATION,
+            },
+            {
+              operation: `${context.getClass().name}.${context.getHandler().name}`,
+              detail: access.kind,
+              // Set by our own decorators, never by the client. Quoted,
+              // since it has spaces.
+              problem:
+                access.kind === 'invalid'
+                  ? JSON.stringify(access.problem)
+                  : undefined,
+            },
+          ),
+        );
         throw new ServiceUnavailableException(
           apiError(
             ErrorCode.AUTHORIZATION_UNAVAILABLE,
-            'Route access is not declared',
+            'Authorization is temporarily unavailable',
           ),
         );
       }
@@ -76,9 +118,6 @@ export class RbacGuard implements CanActivate {
       case 'permission': {
         // `userId` comes only from the auth context, never from the request
         // body, params or headers the client controls.
-        const request = context
-          .switchToHttp()
-          .getRequest<AuthenticatedRequest>();
         const userId = request.user?.id;
         // `AccessCheckGuard` already refused a request without a user. This
         // is a second line of defence if the guard order ever changes.
@@ -94,9 +133,9 @@ export class RbacGuard implements CanActivate {
           requestId: request.id,
         };
 
-        let allowed: boolean;
+        let decision: RbacDecision;
         try {
-          allowed = await this.authorizationService.authorize(
+          decision = await this.authorizationService.authorize(
             userId,
             access.permission,
             access.action,
@@ -104,15 +143,25 @@ export class RbacGuard implements CanActivate {
         } catch (error) {
           // Logged, then rethrown unchanged: it stays a 503, never a 403.
           if (error instanceof RbacPolicyUnavailableError) {
-            this.audit.accessUnavailable(auditEvent);
+            this.audit.accessUnavailable(auditEvent, error.category);
           }
           throw error;
         }
 
-        if (!allowed) {
+        const decisionEvent = {
+          ...auditEvent,
+          policyVersion: decision.policyVersion,
+        };
+        if (!decision.allowed) {
           // Logged here, not in the response: the 403 itself stays neutral.
-          this.audit.accessDenied(auditEvent);
+          this.audit.accessDenied(
+            decisionEvent,
+            ForbiddenCategory.PERMISSION_DENIED,
+          );
           throw new ForbiddenException();
+        }
+        if (isCriticalOperation(access.permission, access.action)) {
+          this.audit.accessGranted(decisionEvent);
         }
         return true;
       }

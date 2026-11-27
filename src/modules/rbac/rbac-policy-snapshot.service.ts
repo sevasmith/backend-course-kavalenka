@@ -9,6 +9,7 @@ import { Repository } from 'typeorm';
 import { IsolationLevel, Transactional } from 'typeorm-transactional';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
+import { UnavailableCategory } from '@/core/logging/refusal-log';
 import { Grant } from './grant.entity';
 import { GrantAction } from './grant-action.entity';
 import { Permission } from './permission.entity';
@@ -24,14 +25,24 @@ import { UserRole } from './user-role.entity';
 
 const POLICY_STATE_ID = 1;
 
+/** Which part of the policy was unavailable (a 503 log category). */
+export type RbacUnavailableCategory =
+  | typeof UnavailableCategory.RBAC_VERSION
+  | typeof UnavailableCategory.RBAC_SNAPSHOT;
+
 /**
  * There is no current policy to check against: the snapshot could not be
  * loaded, is invalid, or its version could not be read. The request is
  * denied with 503 `authorization_unavailable`; the global exception filter
  * replaces the message with a neutral one.
+ *
+ * `category` tells the log which of the two failed; the client never sees it.
  */
 export class RbacPolicyUnavailableError extends ServiceUnavailableException {
-  constructor(options?: { cause?: unknown }) {
+  constructor(
+    readonly category: RbacUnavailableCategory,
+    options?: { cause?: unknown },
+  ) {
     super(
       apiError(
         ErrorCode.AUTHORIZATION_UNAVAILABLE,
@@ -110,8 +121,12 @@ export class RbacPolicySnapshotService implements OnApplicationBootstrap {
     } catch (error) {
       // Without the version we can't tell if the snapshot is current.
       // It is kept: once the DB is back, it is still valid if nothing changed.
-      this.logger.error('RBAC policy version could not be read');
-      throw new RbacPolicyUnavailableError({ cause: error });
+      this.logger.error(
+        `RBAC policy version could not be read, category=${UnavailableCategory.RBAC_VERSION}`,
+      );
+      throw new RbacPolicyUnavailableError(UnavailableCategory.RBAC_VERSION, {
+        cause: error,
+      });
     }
 
     if (this.snapshot?.version === version) {
@@ -146,9 +161,12 @@ export class RbacPolicySnapshotService implements OnApplicationBootstrap {
       this.logger.error(
         `RBAC policy load failed, policy unavailable, ` +
           `previousVersion=${previousVersion ?? 'none'}, ` +
+          `category=${UnavailableCategory.RBAC_SNAPSHOT}, ` +
           `reason=${error instanceof Error ? error.name : 'unknown'}`,
       );
-      throw new RbacPolicyUnavailableError({ cause: error });
+      throw new RbacPolicyUnavailableError(UnavailableCategory.RBAC_SNAPSHOT, {
+        cause: error,
+      });
     }
   }
 

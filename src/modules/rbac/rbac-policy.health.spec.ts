@@ -37,7 +37,9 @@ describe('RbacPolicyHealthIndicator', () => {
   });
 
   it('is down when the policy snapshot is unavailable', async () => {
-    getCurrentSnapshot.mockRejectedValue(new RbacPolicyUnavailableError());
+    getCurrentSnapshot.mockRejectedValue(
+      new RbacPolicyUnavailableError('rbac_snapshot'),
+    );
 
     await expect(indicator.isHealthy()).resolves.toEqual({
       rbac: { status: 'down', message: 'RBAC policy is unavailable' },
@@ -46,7 +48,7 @@ describe('RbacPolicyHealthIndicator', () => {
 
   it('becomes up again once the policy loads', async () => {
     getCurrentSnapshot
-      .mockRejectedValueOnce(new RbacPolicyUnavailableError())
+      .mockRejectedValueOnce(new RbacPolicyUnavailableError('rbac_snapshot'))
       .mockResolvedValueOnce({ version: 1 });
 
     await expect(indicator.isHealthy()).resolves.toMatchObject({

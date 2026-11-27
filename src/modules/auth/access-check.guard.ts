@@ -10,7 +10,15 @@ import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
-import { getRouteAccess } from '@/modules/rbac/rbac.decorators';
+import {
+  formatRefusal,
+  UnauthorizedCategory,
+  UnavailableCategory,
+} from '@/core/logging/refusal-log';
+import {
+  getRouteAccess,
+  resolveRequestAccess,
+} from '@/modules/rbac/rbac.decorators';
 import type { AuthenticatedRequest } from '@/modules/rbac/rbac.guard';
 import { UsersService } from '@/modules/users/users.service';
 import { UserStatus } from '@/modules/users/user.types';
@@ -29,7 +37,9 @@ import { TokenService } from './token.service';
  *
  * Every refusal (no cookie, bad or expired token, unknown or non-active
  * user) is the same 401 `invalid_session`; the reason goes only to the log.
- * A database error is 503: the session may be fine, so it is not a 401.
+ * A database error is 503 `authorization_unavailable` (1.3 §1.3.1): the
+ * session may be fine, so it is not a 401, and the access decision cannot
+ * be made, so it is the same code as an unavailable RBAC snapshot.
  *
  * The user is read on every request, so a blocked or deleted user loses
  * access at once, not when the 15-minute token expires.
@@ -45,21 +55,27 @@ export class AccessCheckGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const access = getRouteAccess(
-      this.reflector,
-      context.getHandler(),
-      context.getClass(),
+    const request = context
+      .switchToHttp()
+      .getRequest<FastifyRequest & AuthenticatedRequest>();
+    const access = resolveRequestAccess(
+      getRouteAccess(this.reflector, context.getHandler(), context.getClass()),
+      request.headers,
     );
+
+    // A receipt-only route called without its header: there is no receipt
+    // and no session to fall back on.
+    if (access.kind === 'receiptMissing') {
+      this.reject(UnauthorizedCategory.MISSING, { detail: 'receipt' });
+    }
     // Only routes with a permission need a user. `@Public()` routes stay
-    // open, and undeclared or ambiguous ones are left to `RbacGuard`, which
-    // answers 503 for them (a 401 here would hide the misconfiguration).
+    // open, a presented receipt is checked by the handler, and undeclared,
+    // ambiguous or invalid routes are left to `RbacGuard`, which answers 503
+    // for them (a 401 here would hide the misconfiguration).
     if (access.kind !== 'permission') {
       return true;
     }
 
-    const request = context
-      .switchToHttp()
-      .getRequest<FastifyRequest & AuthenticatedRequest>();
     // Never trust a `user` set by anything before this guard.
     request.user = undefined;
 
@@ -76,21 +92,32 @@ export class AccessCheckGuard implements CanActivate {
       user = await this.usersService.findStatusById(userId);
     } catch (error) {
       this.logger.error(
-        `Access check failed, reason=database, userId=${userId}: ${(error as Error).name}`,
+        formatRefusal(
+          { status: 503, category: UnavailableCategory.USERS },
+          { userId, error: (error as Error).name },
+        ),
       );
       throw new ServiceUnavailableException(
         apiError(
-          ErrorCode.SERVICE_UNAVAILABLE,
-          'Service is temporarily unavailable',
+          ErrorCode.AUTHORIZATION_UNAVAILABLE,
+          'Authorization is temporarily unavailable',
         ),
       );
     }
 
+    // One category for both: 1.3 counts a deleted user as not `active`.
+    // The exact status is kept as `detail` for whoever reads the log.
     if (!user) {
-      this.reject('user_missing', userId);
+      this.reject(UnauthorizedCategory.USER_INACTIVE, {
+        detail: 'not_found',
+        userId,
+      });
     }
     if (user.status !== UserStatus.ACTIVE) {
-      this.reject(`user_${user.status}`, userId);
+      this.reject(UnauthorizedCategory.USER_INACTIVE, {
+        detail: user.status,
+        userId,
+      });
     }
 
     // Only the id: no roles or other claims. RBAC reads the roles itself.
@@ -98,11 +125,12 @@ export class AccessCheckGuard implements CanActivate {
     return true;
   }
 
-  /** Logs the reason (never the token) and throws the shared 401. */
-  private reject(reason: string, userId?: string): never {
-    this.logger.warn(
-      `Access refused, reason=${reason}, userId=${userId ?? 'unknown'}`,
-    );
+  /** Logs the category (never the token) and throws the shared 401. */
+  private reject(
+    category: UnauthorizedCategory,
+    fields: { detail?: string; userId?: string } = {},
+  ): never {
+    this.logger.warn(formatRefusal({ status: 401, category }, fields));
     throw new UnauthorizedException(
       apiError(ErrorCode.INVALID_SESSION, INVALID_SESSION_MESSAGE),
     );

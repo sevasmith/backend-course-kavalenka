@@ -42,12 +42,19 @@ export function isAllowed(
   return false;
 }
 
+/** One access decision and the policy version it was made on (for the audit). */
+export interface RbacDecision {
+  allowed: boolean;
+  policyVersion: number;
+}
+
 @Injectable()
 export class RbacAuthorizationService {
   constructor(private readonly snapshotService: RbacPolicySnapshotService) {}
 
   /**
-   * Checks access against the current policy version.
+   * Checks access against the current policy version, and returns that
+   * version too, so the audit log can say which policy decided.
    *
    * Throws `RbacPolicyUnavailableError` when there is no current policy. The
    * caller must not treat that as a deny: it is a 503
@@ -57,8 +64,11 @@ export class RbacAuthorizationService {
     userId: string,
     permission: string,
     action: string,
-  ): Promise<boolean> {
+  ): Promise<RbacDecision> {
     const snapshot = await this.snapshotService.getCurrentSnapshot();
-    return isAllowed(snapshot, userId, permission, action);
+    return {
+      allowed: isAllowed(snapshot, userId, permission, action),
+      policyVersion: snapshot.version,
+    };
   }
 }

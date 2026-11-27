@@ -1,8 +1,8 @@
-import { Controller, Get, Post } from '@nestjs/common';
+import { Controller, Get, Logger, Post } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 
-import { Public, RequirePermission } from './rbac.decorators';
+import { Public, ReceiptHeader, RequirePermission } from './rbac.decorators';
 import { RbacRouteScanner } from './rbac-route-scanner';
 
 @Controller('good')
@@ -14,6 +14,15 @@ class GoodController {
   @Post()
   @RequirePermission('users', 'update')
   protected() {}
+
+  @Get('receipt')
+  @ReceiptHeader('Deletion-Receipt')
+  byReceipt() {}
+
+  @Get('receipt-or-pair')
+  @ReceiptHeader('Deletion-Receipt')
+  @RequirePermission('users', 'delete')
+  byReceiptOrPair() {}
 
   // Not a route: no decorator needed.
   helper() {}
@@ -28,6 +37,30 @@ class BadController {
   @Public()
   @RequirePermission('users', 'update')
   both() {}
+}
+
+@Controller('typo')
+class TypoController {
+  @Get()
+  @RequirePermission('Users', 'read')
+  read() {}
+
+  @Post()
+  @Public()
+  @ReceiptHeader('Deletion-Receipt')
+  publicAndReceipt() {}
+}
+
+@Controller('receipt-typo')
+class ReceiptTypoController {
+  @Post('header')
+  @ReceiptHeader('Deletion Receipt')
+  badHeader() {}
+
+  @Post('pair')
+  @ReceiptHeader('Deletion-Receipt')
+  @RequirePermission('users', 'Delete')
+  badPair() {}
 }
 
 @Public()
@@ -47,6 +80,8 @@ async function scannerFor(controllers: (new () => object)[]) {
 }
 
 describe('RbacRouteScanner', () => {
+  afterEach(() => jest.restoreAllMocks());
+
   it('accepts routes that declare their access', async () => {
     const scanner = await scannerFor([GoodController, PublicController]);
 
@@ -63,11 +98,43 @@ describe('RbacRouteScanner', () => {
     ]);
   });
 
+  it('names routes with a bad name or @Public() with a receipt', async () => {
+    const scanner = await scannerFor([TypoController]);
+
+    expect(scanner.findRoutesWithoutAccess()).toEqual([
+      'TypoController.read: invalid, bad permission name "Users"',
+      'TypoController.publicAndReceipt: ambiguous',
+    ]);
+  });
+
+  it('checks the names on receipt routes too', async () => {
+    const scanner = await scannerFor([ReceiptTypoController]);
+
+    expect(scanner.findRoutesWithoutAccess()).toEqual([
+      'ReceiptTypoController.badHeader: invalid, bad receipt header name "Deletion Receipt"',
+      'ReceiptTypoController.badPair: invalid, bad action name "Delete"',
+    ]);
+  });
+
   it('stops the startup with the bad routes in the error', async () => {
     const scanner = await scannerFor([BadController]);
+    jest.spyOn(Logger.prototype, 'error').mockImplementation();
 
     expect(() => scanner.onModuleInit()).toThrow(
       /BadController\.forgotten: undeclared/,
     );
+  });
+
+  it('logs every bad route on its own line before stopping', async () => {
+    const scanner = await scannerFor([BadController, TypoController]);
+    const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+
+    expect(() => scanner.onModuleInit()).toThrow();
+    expect(error.mock.calls.map(([line]) => line as string)).toEqual([
+      'rbac.route.invalid operation=BadController.forgotten kind=undeclared',
+      'rbac.route.invalid operation=BadController.both kind=ambiguous',
+      'rbac.route.invalid operation=TypoController.read kind=invalid problem="bad permission name \\"Users\\""',
+      'rbac.route.invalid operation=TypoController.publicAndReceipt kind=ambiguous',
+    ]);
   });
 });
