@@ -133,15 +133,17 @@ describe('RbacAuthorizationService', () => {
     service = module.get(RbacAuthorizationService);
   });
 
-  it('decides on the current snapshot', async () => {
+  it('decides on the current snapshot and returns its version', async () => {
     getCurrentSnapshot.mockResolvedValue(snapshot());
 
-    await expect(service.authorize('alice', 'users', 'read')).resolves.toBe(
-      true,
-    );
-    await expect(service.authorize('alice', 'users', 'list')).resolves.toBe(
-      false,
-    );
+    await expect(service.authorize('alice', 'users', 'read')).resolves.toEqual({
+      allowed: true,
+      policyVersion: 1,
+    });
+    await expect(service.authorize('alice', 'users', 'list')).resolves.toEqual({
+      allowed: false,
+      policyVersion: 1,
+    });
   });
 
   it('throws instead of denying when the policy is unavailable', async () => {

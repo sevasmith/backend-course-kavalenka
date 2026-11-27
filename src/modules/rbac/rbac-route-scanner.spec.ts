@@ -1,4 +1,4 @@
-import { Controller, Get, Post } from '@nestjs/common';
+import { Controller, Get, Logger, Post } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 
@@ -68,6 +68,8 @@ async function scannerFor(controllers: (new () => object)[]) {
 }
 
 describe('RbacRouteScanner', () => {
+  afterEach(() => jest.restoreAllMocks());
+
   it('accepts routes that declare their access', async () => {
     const scanner = await scannerFor([GoodController, PublicController]);
 
@@ -95,9 +97,23 @@ describe('RbacRouteScanner', () => {
 
   it('stops the startup with the bad routes in the error', async () => {
     const scanner = await scannerFor([BadController]);
+    jest.spyOn(Logger.prototype, 'error').mockImplementation();
 
     expect(() => scanner.onModuleInit()).toThrow(
       /BadController\.forgotten: undeclared/,
     );
+  });
+
+  it('logs every bad route on its own line before stopping', async () => {
+    const scanner = await scannerFor([BadController, TypoController]);
+    const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+
+    expect(() => scanner.onModuleInit()).toThrow();
+    expect(error.mock.calls.map(([line]) => line as string)).toEqual([
+      'rbac.route.invalid operation=BadController.forgotten kind=undeclared',
+      'rbac.route.invalid operation=BadController.both kind=ambiguous',
+      'rbac.route.invalid operation=TypoController.read kind=invalid problem="bad permission name \\"Users\\""',
+      'rbac.route.invalid operation=TypoController.publicAndReceipt kind=ambiguous',
+    ]);
   });
 });

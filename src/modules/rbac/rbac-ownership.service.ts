@@ -1,7 +1,9 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
-import { ForbiddenCategory, formatRefusal } from '@/core/logging/refusal-log';
+import { ForbiddenCategory } from '@/core/logging/refusal-log';
+import { currentRequestId } from '@/core/logging/request-context';
+import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacAuthorizationService } from './rbac-authorization.service';
 
 /** What one ownership check needs. */
@@ -14,6 +16,8 @@ export interface OwnershipCheck {
   permission: string;
   /** The extra action that allows acting on someone else's data, e.g. `read_any`. */
   anyAction: string;
+  /** The operation name for the audit log, e.g. `UsersController.findOne`. */
+  operation: string;
 }
 
 /**
@@ -35,13 +39,16 @@ export interface OwnershipCheck {
  * can't be loaded, `RbacPolicyUnavailableError` (503
  * `authorization_unavailable`) passes through unchanged and never becomes a
  * 403. The 403 body is neutral: no owner id, no missing action.
+ *
+ * Audit: a denial is logged with `ownership_denied`; an admission through
+ * `*_any` is a critical operation and is logged with the target id.
+ * Acting on your own data is not an RBAC decision and is not logged.
  */
 @Injectable()
 export class RbacOwnershipService {
-  private readonly logger = new Logger(RbacOwnershipService.name);
-
   constructor(
     private readonly authorizationService: RbacAuthorizationService,
+    private readonly audit: RbacAuditLogger,
   ) {}
 
   async assertOwnerOrAny(check: OwnershipCheck): Promise<void> {
@@ -49,30 +56,33 @@ export class RbacOwnershipService {
       return;
     }
 
-    const allowed = await this.authorizationService.authorize(
+    const decision = await this.authorizationService.authorize(
       check.actorUserId,
       check.permission,
       check.anyAction,
     );
-    if (!allowed) {
-      // The owner id is not logged: the target id goes into the log only
-      // after admission to the resource (1.3 §1.5).
-      this.logger.warn(
-        formatRefusal(
-          { status: 403, category: ForbiddenCategory.OWNERSHIP_DENIED },
-          {
-            actorUserId: check.actorUserId,
-            permission: check.permission,
-            action: check.anyAction,
-          },
-        ),
-      );
-      throw new ForbiddenException(
-        apiError(
-          ErrorCode.OWNERSHIP_DENIED,
-          'Not allowed to access this resource',
-        ),
-      );
+    const event = {
+      actorUserId: check.actorUserId,
+      permission: check.permission,
+      action: check.anyAction,
+      operation: check.operation,
+      requestId: currentRequestId(),
+      policyVersion: decision.policyVersion,
+    };
+
+    if (decision.allowed) {
+      // Admitted, so the target id may be logged now (1.3 §1.5).
+      this.audit.accessGranted({ ...event, targetId: check.ownerId });
+      return;
     }
+
+    // No owner id here: the actor was not admitted to the resource.
+    this.audit.accessDenied(event, ForbiddenCategory.OWNERSHIP_DENIED);
+    throw new ForbiddenException(
+      apiError(
+        ErrorCode.OWNERSHIP_DENIED,
+        'Not allowed to access this resource',
+      ),
+    );
   }
 }

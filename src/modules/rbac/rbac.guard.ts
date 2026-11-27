@@ -10,10 +10,21 @@ import {
 import { Reflector } from '@nestjs/core';
 
 import { apiError, ErrorCode } from '@/core/http/api-error';
-import { formatRefusal, UnavailableCategory } from '@/core/logging/refusal-log';
+import {
+  ForbiddenCategory,
+  formatRefusal,
+  UnavailableCategory,
+} from '@/core/logging/refusal-log';
 import { getRouteAccess, resolveRequestAccess } from './rbac.decorators';
-import { RbacAccessCheckEvent, RbacAuditLogger } from './rbac-audit.logger';
-import { RbacAuthorizationService } from './rbac-authorization.service';
+import {
+  isCriticalOperation,
+  RbacAccessCheckEvent,
+  RbacAuditLogger,
+} from './rbac-audit.logger';
+import {
+  RbacAuthorizationService,
+  RbacDecision,
+} from './rbac-authorization.service';
 import { RbacPolicyUnavailableError } from './rbac-policy-snapshot.service';
 
 /**
@@ -122,9 +133,9 @@ export class RbacGuard implements CanActivate {
           requestId: request.id,
         };
 
-        let allowed: boolean;
+        let decision: RbacDecision;
         try {
-          allowed = await this.authorizationService.authorize(
+          decision = await this.authorizationService.authorize(
             userId,
             access.permission,
             access.action,
@@ -137,10 +148,20 @@ export class RbacGuard implements CanActivate {
           throw error;
         }
 
-        if (!allowed) {
+        const decisionEvent = {
+          ...auditEvent,
+          policyVersion: decision.policyVersion,
+        };
+        if (!decision.allowed) {
           // Logged here, not in the response: the 403 itself stays neutral.
-          this.audit.accessDenied(auditEvent);
+          this.audit.accessDenied(
+            decisionEvent,
+            ForbiddenCategory.PERMISSION_DENIED,
+          );
           throw new ForbiddenException();
+        }
+        if (isCriticalOperation(access.permission, access.action)) {
+          this.audit.accessGranted(decisionEvent);
         }
         return true;
       }

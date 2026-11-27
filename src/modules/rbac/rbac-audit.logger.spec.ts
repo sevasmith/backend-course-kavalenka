@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 
 import {
   formatAuditEvent,
+  isCriticalOperation,
   RbacAuditLogger,
   safeEntityId,
 } from './rbac-audit.logger';
@@ -80,17 +81,50 @@ describe('RbacAuditLogger', () => {
     );
   });
 
-  it('logs an access denial', () => {
-    audit.accessDenied({
-      actorUserId: 'alice',
-      permission: 'users',
-      action: 'list',
-      operation: 'UsersController.list',
-      requestId: 'req-1',
-    });
+  it('logs an access denial with the policy version and category', () => {
+    audit.accessDenied(
+      {
+        actorUserId: 'alice',
+        permission: 'users',
+        action: 'list',
+        operation: 'UsersController.list',
+        requestId: 'req-1',
+        policyVersion: 3,
+      },
+      'permission_denied',
+    );
 
     expect(warn).toHaveBeenCalledWith(
-      'rbac.access.denied actorUserId=alice permission=users action=list operation=UsersController.list requestId=req-1 category=permission_denied result=403',
+      'rbac.access.denied actorUserId=alice permission=users action=list operation=UsersController.list requestId=req-1 policyVersion=3 category=permission_denied result=403',
     );
+  });
+
+  it('logs an admission with the target id', () => {
+    audit.accessGranted({
+      actorUserId: 'admin',
+      permission: 'users',
+      action: 'read_any',
+      operation: 'UsersController.findOne',
+      requestId: 'req-2',
+      policyVersion: 3,
+      targetId: ID,
+    });
+
+    expect(log).toHaveBeenCalledWith(
+      `rbac.access.granted actorUserId=admin permission=users action=read_any operation=UsersController.findOne requestId=req-2 policyVersion=3 targetId=${ID} result=allowed`,
+    );
+  });
+});
+
+describe('isCriticalOperation', () => {
+  it.each([
+    ['rbac', 'manage', true],
+    ['users', 'read_any', true],
+    ['transformations', 'delete', true],
+    ['users', 'read', false],
+    ['users', 'update', false],
+    ['users', 'manage', false],
+  ])('%s@%s → %s', (permission, action, expected) => {
+    expect(isCriticalOperation(permission, action)).toBe(expected);
   });
 });

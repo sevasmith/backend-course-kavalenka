@@ -85,7 +85,10 @@ describe('RBAC (e2e)', () => {
   };
 
   const authorize = (userId: string, permission: string, action: string) =>
-    app.get(RbacAuthorizationService).authorize(userId, permission, action);
+    app
+      .get(RbacAuthorizationService)
+      .authorize(userId, permission, action)
+      .then((decision) => decision.allowed);
 
   const policyVersion = async (): Promise<number> => {
     const rows: { version: number }[] = await db.query(
