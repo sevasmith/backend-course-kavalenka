@@ -109,6 +109,12 @@ describe('RBAC OpenAPI document', () => {
       for (const status of ['401', '403', '429', '503']) {
         expect(operation.responses[status]).toBeDefined();
       }
+      const text = (status: string) =>
+        (operation.responses[status] as { description: string }).description;
+      expect(text('401')).toContain('invalid_session');
+      expect(text('503')).toContain('authorization_unavailable');
+      // Admin routes have no ownership check: `rbac@manage` covers all.
+      expect(text('403')).not.toContain('ownership_denied');
     }
   });
 

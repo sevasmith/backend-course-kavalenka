@@ -1,5 +1,6 @@
 import { applyDecorators, INestApplication } from '@nestjs/common';
 import {
+  ApiCookieAuth,
   ApiHeader,
   ApiResponse,
   DocumentBuilder,
@@ -118,4 +119,79 @@ export const ApiCsrfHeader = () =>
         'Required, with the value `1`, on a request from another origin ' +
         '(a trusted frontend). Not needed from the same origin.',
     }),
+  );
+
+/**
+ * 401 of every protected route. One code for every cause (no cookie, bad or
+ * expired token, user missing or not `active`), so the answer never says
+ * which check failed.
+ */
+export const INVALID_SESSION_DESCRIPTION =
+  '`invalid_session`: no valid session (the `access_token` cookie is ' +
+  'missing, invalid or expired, or the user is not `active`). The client ' +
+  'may call `POST /auth/refresh` once and retry.';
+
+/** Default 403 from `RbacGuard`; a route can replace it to name its pair. */
+export const PERMISSION_DENIED_DESCRIPTION =
+  '`permission_denied`: the user lacks the required `permission@action`. ' +
+  'Returned before any lookup, so it never reveals whether a resource exists.';
+
+/** 403 from the ownership check, only on routes that run it. */
+export const OWNERSHIP_DENIED_DESCRIPTION =
+  '`ownership_denied`: the resource belongs to another user and the user ' +
+  'lacks the matching `*_any` action.';
+
+/** 503 from the access check or `RbacGuard`. */
+export const AUTHORIZATION_UNAVAILABLE_DESCRIPTION =
+  '`authorization_unavailable`: the user or the RBAC policy could not be ' +
+  'read. Retry later.';
+
+export interface ApiProtectedOptions {
+  /** Replaces the default `permission_denied` text, e.g. to name the pair. */
+  permissionDenied?: string;
+  /** The handler checks ownership, so 403 can also be `ownership_denied`. */
+  ownership?: boolean;
+}
+
+/**
+ * The 403 text. OpenAPI keeps one response per status, so every code a
+ * route can return as 403 goes into one description.
+ */
+const forbiddenDescription = (
+  { permissionDenied, ownership }: ApiProtectedOptions,
+  write: boolean,
+) =>
+  [
+    permissionDenied ?? PERMISSION_DENIED_DESCRIPTION,
+    ownership ? OWNERSHIP_DENIED_DESCRIPTION : undefined,
+    write ? CSRF_REJECTED_DESCRIPTION : undefined,
+  ]
+    .filter(Boolean)
+    .join(' Or ');
+
+/**
+ * A route behind the authorization chain (access check → CSRF → RBAC →
+ * ownership): the `access_token` cookie and the errors the chain returns
+ * before the handler. Works on a controller or a route. Public routes must
+ * not use it: they never read the access cookie, so they return none of
+ * these.
+ */
+export const ApiProtected = (options: ApiProtectedOptions = {}) =>
+  applyDecorators(
+    ApiCookieAuth(ACCESS_TOKEN_COOKIE),
+    ApiErrorResponse(401, INVALID_SESSION_DESCRIPTION),
+    ApiErrorResponse(403, forbiddenDescription(options, false)),
+    ApiRateLimitResponse(),
+    ApiErrorResponse(503, AUTHORIZATION_UNAVAILABLE_DESCRIPTION),
+  );
+
+/**
+ * Add to a protected route that changes data (POST, PUT, PATCH, DELETE):
+ * `CsrfGuard` checks it, so it gets the CSRF header and `csrf_rejected` in
+ * its 403. The route-level 403 replaces the controller's one.
+ */
+export const ApiProtectedWrite = (options: ApiProtectedOptions = {}) =>
+  applyDecorators(
+    ApiCsrfHeader(),
+    ApiErrorResponse(403, forbiddenDescription(options, true)),
   );
