@@ -51,6 +51,18 @@ class TypoController {
   publicAndReceipt() {}
 }
 
+@Controller('receipt-typo')
+class ReceiptTypoController {
+  @Post('header')
+  @ReceiptHeader('Deletion Receipt')
+  badHeader() {}
+
+  @Post('pair')
+  @ReceiptHeader('Deletion-Receipt')
+  @RequirePermission('users', 'Delete')
+  badPair() {}
+}
+
 @Public()
 @Controller('public')
 class PublicController {
@@ -92,6 +104,15 @@ describe('RbacRouteScanner', () => {
     expect(scanner.findRoutesWithoutAccess()).toEqual([
       'TypoController.read: invalid, bad permission name "Users"',
       'TypoController.publicAndReceipt: ambiguous',
+    ]);
+  });
+
+  it('checks the names on receipt routes too', async () => {
+    const scanner = await scannerFor([ReceiptTypoController]);
+
+    expect(scanner.findRoutesWithoutAccess()).toEqual([
+      'ReceiptTypoController.badHeader: invalid, bad receipt header name "Deletion Receipt"',
+      'ReceiptTypoController.badPair: invalid, bad action name "Delete"',
     ]);
   });
 

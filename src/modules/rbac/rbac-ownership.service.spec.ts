@@ -72,6 +72,15 @@ describe('RbacOwnershipService', () => {
     expect(accessDenied).toHaveBeenCalledWith(event, 'ownership_denied');
   });
 
+  it('compares ids exactly, so a near match still needs *_any (fails closed)', async () => {
+    authorize.mockResolvedValue({ allowed: false, policyVersion: 5 });
+
+    await expect(
+      service.assertOwnerOrAny({ ...check, ownerId: 'ALICE' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(authorize).toHaveBeenCalledWith('alice', 'users', 'read_any');
+  });
+
   it('keeps an unavailable snapshot as 503, never a 403', async () => {
     authorize.mockRejectedValue(
       new RbacPolicyUnavailableError('rbac_snapshot'),

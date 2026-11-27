@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
-import { Public, RequirePermission } from './rbac.decorators';
+import { Public, ReceiptHeader, RequirePermission } from './rbac.decorators';
 import { AuthenticatedRequest, RbacGuard } from './rbac.guard';
 import { RbacAuditLogger } from './rbac-audit.logger';
 import { RbacAuthorizationService } from './rbac-authorization.service';
@@ -31,6 +31,13 @@ class TestController {
 
   @RequirePermission('users', 'delete')
   remove() {}
+
+  @ReceiptHeader('Deletion-Receipt')
+  byReceipt() {}
+
+  @ReceiptHeader('Deletion-Receipt')
+  @RequirePermission('users', 'delete')
+  byReceiptOrPair() {}
 }
 
 @Public()
@@ -198,6 +205,48 @@ describe('RbacGuard', () => {
       operation: 'TestController.remove',
       requestId: 'req-3',
       policyVersion: 4,
+    });
+  });
+
+  describe('receipt routes', () => {
+    // Fastify lowercases header names.
+    const withReceipt = { headers: { 'deletion-receipt': 'r-1' } };
+
+    it.each(['byReceipt', 'byReceiptOrPair'])(
+      '%s with the header: skips RBAC and leaves the receipt to the handler',
+      async (method) => {
+        // No user: the access check was skipped too.
+        await expect(
+          guard.canActivate(contextFor(TestController, method, withReceipt)),
+        ).resolves.toBe(true);
+        expect(authorize).not.toHaveBeenCalled();
+      },
+    );
+
+    it('receipt only, without the header: 401, never a permission check', async () => {
+      await expect(
+        guard.canActivate(
+          contextFor(TestController, 'byReceipt', {
+            user: { id: 'alice' },
+            headers: {},
+          }),
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('receipt + pair, without the header: checks the pair as usual', async () => {
+      authorize.mockResolvedValue({ allowed: false, policyVersion: 1 });
+
+      await expect(
+        guard.canActivate(
+          contextFor(TestController, 'byReceiptOrPair', {
+            user: { id: 'alice' },
+            headers: {},
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(authorize).toHaveBeenCalledWith('alice', 'users', 'delete');
     });
   });
 

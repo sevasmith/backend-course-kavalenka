@@ -6,7 +6,11 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
-import { Public, RequirePermission } from '@/modules/rbac/rbac.decorators';
+import {
+  Public,
+  ReceiptHeader,
+  RequirePermission,
+} from '@/modules/rbac/rbac.decorators';
 import type { AuthenticatedRequest } from '@/modules/rbac/rbac.guard';
 import { UsersService } from '@/modules/users/users.service';
 import { UserStatus } from '@/modules/users/user.types';
@@ -23,6 +27,20 @@ class TestController {
   protected() {}
 
   undeclared() {}
+
+  @Public()
+  @RequirePermission('users', 'read')
+  ambiguous() {}
+
+  @RequirePermission('Users', 'read')
+  invalid() {}
+
+  @ReceiptHeader('Deletion-Receipt')
+  byReceipt() {}
+
+  @ReceiptHeader('Deletion-Receipt')
+  @RequirePermission('users', 'delete')
+  byReceiptOrPair() {}
 }
 
 type TestRequest = AuthenticatedRequest & {
@@ -86,11 +104,66 @@ describe('AccessCheckGuard', () => {
     expect(verifyAccess).not.toHaveBeenCalled();
   });
 
-  it('leaves an undeclared route to RbacGuard (its 503)', async () => {
-    await expect(guard.canActivate(contextFor('undeclared', {}))).resolves.toBe(
-      true,
+  it.each(['undeclared', 'ambiguous', 'invalid'])(
+    'leaves an %s route to RbacGuard (its 503, not a 401)',
+    async (method) => {
+      await expect(guard.canActivate(contextFor(method, {}))).resolves.toBe(
+        true,
+      );
+      expect(verifyAccess).not.toHaveBeenCalled();
+    },
+  );
+
+  describe('receipt routes', () => {
+    // Fastify lowercases header names.
+    const receiptHeaders = { 'deletion-receipt': 'r-1' };
+
+    it.each(['byReceipt', 'byReceiptOrPair'])(
+      '%s with the header: skips the cookie, sets no user',
+      async (method) => {
+        const request = { headers: receiptHeaders } as TestRequest;
+
+        await expect(
+          guard.canActivate(contextFor(method, request)),
+        ).resolves.toBe(true);
+        expect(verifyAccess).not.toHaveBeenCalled();
+        expect(request.user).toBeUndefined();
+      },
     );
-    expect(verifyAccess).not.toHaveBeenCalled();
+
+    it('receipt only, without the header: the shared 401', async () => {
+      const error: unknown = await guard
+        .canActivate(contextFor('byReceipt', { headers: {} } as TestRequest))
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(UnauthorizedException);
+      expect((error as UnauthorizedException).getResponse()).toEqual({
+        code: 'invalid_session',
+        message: INVALID_SESSION_MESSAGE,
+      });
+      expect(verifyAccess).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        'access.refused status=401 category=missing detail=receipt',
+      );
+    });
+
+    it('receipt + pair, without the header: runs the usual access check', async () => {
+      verifyAccess.mockReturnValue({ ok: true, userId });
+      findStatusById.mockResolvedValue({
+        id: userId,
+        status: UserStatus.ACTIVE,
+      });
+      const request = {
+        headers: {},
+        cookies: { access_token: 'the-token' },
+      } as TestRequest;
+
+      await expect(
+        guard.canActivate(contextFor('byReceiptOrPair', request)),
+      ).resolves.toBe(true);
+      expect(verifyAccess).toHaveBeenCalledWith('the-token');
+      expect(request.user).toEqual({ id: userId });
+    });
   });
 
   it('sets only the user id for an active user', async () => {
