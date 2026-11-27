@@ -149,11 +149,15 @@ export class RbacAuditLogger {
    * An access check said yes to a critical operation (see
    * `isCriticalOperation`). Other admissions are not logged: one line per
    * ordinary request would bury the lines that matter.
+   *
+   * `targetId` usually comes from the URL (`/users/:id`), so only a UUID is
+   * logged: anything else could fake a log line with a newline.
    */
   accessGranted(event: RbacDecisionEvent): void {
     this.logger.log(
       formatAuditEvent('rbac.access.granted', {
         ...event,
+        targetId: safeEntityId(event.targetId),
         result: 'allowed',
       }),
     );

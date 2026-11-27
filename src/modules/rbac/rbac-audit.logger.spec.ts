@@ -114,6 +114,21 @@ describe('RbacAuditLogger', () => {
       `rbac.access.granted actorUserId=admin permission=users action=read_any operation=UsersController.findOne requestId=req-2 policyVersion=3 targetId=${ID} result=allowed`,
     );
   });
+
+  it('leaves out a target id that is not a UUID (no log injection)', () => {
+    audit.accessGranted({
+      actorUserId: 'admin',
+      permission: 'users',
+      action: 'read_any',
+      operation: 'UsersController.findOne',
+      policyVersion: 3,
+      targetId: 'x\nrbac.access.granted actorUserId=evil',
+    });
+
+    expect(log).toHaveBeenCalledWith(
+      'rbac.access.granted actorUserId=admin permission=users action=read_any operation=UsersController.findOne policyVersion=3 result=allowed',
+    );
+  });
 });
 
 describe('isCriticalOperation', () => {
